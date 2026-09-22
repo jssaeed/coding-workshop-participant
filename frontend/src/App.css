@@ -1,42 +1,161 @@
-#root {
-  max-width: 1280px;
+/* Minimal layout so the app is usable; visual design comes later. */
+
+.app {
+  max-width: 1100px;
   margin: 0 auto;
-  padding: 2rem;
-  text-align: center;
+  padding: 1rem;
 }
 
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: filter 300ms;
-}
-.logo:hover {
-  filter: drop-shadow(0 0 2em #646cffaa);
-}
-.logo.react:hover {
-  filter: drop-shadow(0 0 2em #61dafbaa);
+.narrow {
+  max-width: 400px;
+  margin: 3rem auto;
+  padding: 0 1rem;
 }
 
-@keyframes logo-spin {
-  from {
-    transform: rotate(0deg);
-  }
-  to {
-    transform: rotate(360deg);
-  }
+nav {
+  padding-bottom: 0.75rem;
+  margin-bottom: 1rem;
+  border-bottom: 1px solid #8884;
 }
 
-@media (prefers-reduced-motion: no-preference) {
-  a:nth-of-type(2) .logo {
-    animation: logo-spin infinite 20s linear;
-  }
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: flex-end;
 }
 
-.card {
-  padding: 2em;
+.space-between {
+  justify-content: space-between;
 }
 
-.read-the-docs {
-  color: #888;
+.filters {
+  margin: 1rem 0;
+}
+
+.panel {
+  border: 1px solid #8884;
+  border-radius: 8px;
+  padding: 1rem;
+  margin: 1rem 0;
+}
+
+form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-bottom: 0.75rem;
+  font-size: 0.9em;
+}
+
+input,
+select,
+textarea {
+  font: inherit;
+  padding: 0.4em 0.6em;
+  border: 1px solid #8888;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+}
+
+button.link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: #646cff;
+  text-decoration: underline;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.95em;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 0.5rem;
+  border-bottom: 1px solid #8884;
+}
+
+tr.clickable {
+  cursor: pointer;
+}
+
+tr.clickable:hover {
+  background: #8881;
+}
+
+.badge {
+  display: inline-block;
+  padding: 0.1em 0.6em;
+  border-radius: 999px;
+  font-size: 0.8em;
+  border: 1px solid #8888;
+  vertical-align: middle;
+}
+
+.status-open { border-color: #4a90e2; }
+.status-in_progress { border-color: #f5a623; }
+.status-blocked { border-color: #d0021b; }
+.status-resolved { border-color: #7ed321; }
+.status-closed { border-color: #9b9b9b; opacity: 0.7; }
+
+.details {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25rem 1rem;
+  margin: 1rem 0;
+}
+
+.details dt {
+  font-weight: 600;
+}
+
+.details dd {
+  margin: 0;
+}
+
+.description {
+  white-space: pre-wrap;
+  padding: 0.75rem;
+  border-left: 3px solid #8888;
+}
+
+.thread {
+  list-style: none;
+  padding: 0;
+}
+
+.thread li {
+  padding: 0.5rem 0;
+  border-bottom: 1px solid #8884;
+  white-space: pre-wrap;
+}
+
+.thread .meta {
+  font-size: 0.85em;
+  opacity: 0.8;
+}
+
+.alert {
+  padding: 0.5rem 0.75rem;
+  border-radius: 6px;
+  margin: 0.5rem 0;
+}
+
+.alert-error {
+  background: #d0021b22;
+  border: 1px solid #d0021b;
+}
+
+.alert-success {
+  background: #7ed32122;
+  border: 1px solid #7ed321;
+}
+
+.muted {
+  opacity: 0.7;
 }

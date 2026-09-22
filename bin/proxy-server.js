@@ -105,6 +105,12 @@ const server = http.createServer((req, res) => {
     }
   };
 
+  // Forward the bearer token for authenticated API calls (CloudFront forwards
+  // it in the cloud). Only when present: Node rejects undefined header values.
+  if (headers.authorization) {
+    options.headers.authorization = headers.authorization;
+  }
+
   const proxyReq = protocol.request(options, (proxyRes) => {
     // Filter out CORS headers from Lambda response since we set our own
     const headers = { ...proxyRes.headers };
