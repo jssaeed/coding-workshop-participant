@@ -1,9 +1,16 @@
 """
-Authentication and role-based access control shared by every service.
+Who is calling, and what are they allowed to do. Shared by every service.
 
-Authentication first (who is calling, proven by a signed token), authorization
-second (may that role do this). Both checks live here so no service invents its
-own rules.
+How login works:
+  1. At signup the password is hashed with bcrypt and only the hash is stored.
+  2. At login the password is checked against the hash. If it matches, the
+     user gets a token (a JWT) that contains their id and role, signed with
+     a secret key so it cannot be forged.
+  3. Every other request sends the token in the "Authorization: Bearer ..."
+     header. current_user() checks the signature and reads the user out.
+
+The signing secret comes from the JWT_SECRET environment variable, which
+Terraform sets on every Lambda so they all accept each other's tokens.
 """
 
 import logging
@@ -23,119 +30,97 @@ IS_LOCAL = os.getenv("IS_LOCAL", "false") == "true"
 ROLE_ADMIN = "facility_admin"
 ROLE_ENGINEER = "engineer"
 ROLE_EMPLOYEE = "employee"
-ROLES = (ROLE_ADMIN, ROLE_ENGINEER, ROLE_EMPLOYEE)
+ALL_ROLES = [ROLE_ADMIN, ROLE_ENGINEER, ROLE_EMPLOYEE]
 
-# Roles that may work on other people's tickets.
-STAFF_ROLES = (ROLE_ADMIN, ROLE_ENGINEER)
+# Roles that work on tickets (can be assigned, can change status).
+STAFF_ROLES = [ROLE_ADMIN, ROLE_ENGINEER]
 
-JWT_ALGORITHM = "HS256"
-TOKEN_TTL_HOURS = 12
+TOKEN_LIFETIME = timedelta(hours=12)
 
-# Used only when JWT_SECRET is missing locally, so a fresh checkout runs
-# without setup. In the cloud a missing secret is a hard error instead: signing
-# tokens with a public constant would let anyone mint an admin token.
-_LOCAL_DEV_SECRET = "local-dev-secret-not-for-cloud"
+# Only used locally when JWT_SECRET is missing, so a fresh checkout just works.
+LOCAL_DEV_SECRET = "local-dev-secret-not-for-cloud"
 
-def _secret():
-    """Return the token signing secret, or fail loudly in the cloud."""
+
+def get_secret():
+    """The key used to sign tokens."""
     secret = os.getenv("JWT_SECRET", "").strip()
     if secret:
         return secret
     if IS_LOCAL:
-        logger.warning("JWT_SECRET is not set - using the local development secret")
-        return _LOCAL_DEV_SECRET
+        logger.warning("JWT_SECRET is not set; using the local development secret")
+        return LOCAL_DEV_SECRET
+    # In the cloud a missing secret must be an error: signing tokens with a
+    # known constant would let anyone create an admin token.
     raise HttpError(500, "Server authentication is not configured")
 
-def hash_password(plain_password):
-    """Hash a password for storage. Never store the password itself."""
-    return bcrypt.hashpw(plain_password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
-def verify_password(plain_password, password_hash):
-    """Check a password against its stored hash."""
+# --- passwords -------------------------------------------------------------
+
+def hash_password(password):
+    """Turn a password into a hash that is safe to store."""
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+def check_password(password, password_hash):
+    """True if the password matches the stored hash."""
     try:
-        return bcrypt.checkpw(
-            plain_password.encode("utf-8"), password_hash.encode("utf-8")
-        )
-    except (ValueError, TypeError):
-        # A malformed or truncated hash in the database, not a valid login.
-        return False
+        return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8"))
+    except ValueError:
+        return False  # the stored hash is damaged; treat as no match
+
+
+# --- tokens ----------------------------------------------------------------
 
 def create_token(user):
-    """
-    Sign a token identifying a user.
-
-    Args:
-        user (dict): a row with id, email and role
-
-    Returns:
-        str: the encoded JWT
-    """
+    """Make a signed token for a user row (needs id, email and role)."""
     now = datetime.now(timezone.utc)
-    payload = {
-        "sub": str(user["id"]),
+    claims = {
+        "sub": str(user["id"]),  # "subject": who the token is for
         "email": user["email"],
         "role": user["role"],
-        "iat": now,
-        "exp": now + timedelta(hours=TOKEN_TTL_HOURS),
+        "iat": now,  # issued at
+        "exp": now + TOKEN_LIFETIME,  # expires
     }
-    return jwt.encode(payload, _secret(), algorithm=JWT_ALGORITHM)
+    return jwt.encode(claims, get_secret(), algorithm="HS256")
 
-def decode_token(token):
-    """
-    Verify a token's signature and expiry.
-
-    Raises:
-        HttpError: 401 when the token is expired or invalid
-    """
-    try:
-        return jwt.decode(token, _secret(), algorithms=[JWT_ALGORITHM])
-    except jwt.ExpiredSignatureError as exc:
-        raise HttpError(401, "Token has expired") from exc
-    except jwt.InvalidTokenError as exc:
-        raise HttpError(401, "Token is invalid") from exc
 
 def current_user(event):
     """
-    Identify the caller from the Authorization header.
+    Read the caller out of the Authorization header.
 
-    Returns:
-        dict: id, email and role of the caller
-
-    Raises:
-        HttpError: 401 when the header is missing or the token does not verify
+    Returns a dict with id, email and role. Raises 401 if there is no token
+    or the token is invalid or expired.
     """
     authorization = headers(event).get("authorization", "")
-    prefix = "bearer "
-    if not authorization.lower().startswith(prefix):
+    if not authorization.lower().startswith("bearer "):
         raise HttpError(401, "Authentication required")
 
-    claims = decode_token(authorization[len(prefix):].strip())
+    token = authorization[len("bearer "):].strip()
     try:
-        user_id = int(claims["sub"])
-    except (KeyError, TypeError, ValueError) as exc:
-        raise HttpError(401, "Token is invalid") from exc
+        claims = jwt.decode(token, get_secret(), algorithms=["HS256"])
+    except jwt.ExpiredSignatureError:
+        raise HttpError(401, "Token has expired")
+    except jwt.InvalidTokenError:
+        raise HttpError(401, "Token is invalid")
 
     return {
-        "id": user_id,
-        "email": claims.get("email"),
-        "role": claims.get("role"),
+        "id": int(claims["sub"]),
+        "email": claims["email"],
+        "role": claims["role"],
     }
 
-def require_role(user, *allowed_roles):
-    """
-    Stop the request unless the caller holds one of the given roles.
 
-    Raises:
-        HttpError: 403 with a consistent access-denied message
-    """
-    if user.get("role") not in allowed_roles:
+# --- roles -----------------------------------------------------------------
+
+def require_role(user, allowed_roles):
+    """Raise 403 unless the user's role is in allowed_roles."""
+    if user["role"] not in allowed_roles:
         raise HttpError(403, "Access denied")
-    return user
+
 
 def is_admin(user):
-    """True when the caller is a facility admin."""
-    return user.get("role") == ROLE_ADMIN
+    return user["role"] == ROLE_ADMIN
+
 
 def is_staff(user):
-    """True when the caller is an engineer or a facility admin."""
-    return user.get("role") in STAFF_ROLES
+    return user["role"] in STAFF_ROLES

@@ -1,32 +1,31 @@
 /**
- * Display helpers shared by the pages.
+ * Small helpers for showing data on the page.
  */
 
 export const STATUSES = ['open', 'in_progress', 'blocked', 'resolved', 'closed']
-
 export const ROLES = ['employee', 'engineer', 'facility_admin']
 
-/** in_progress -> "in progress", facility_admin -> "facility admin" */
+// "in_progress" -> "in progress", "facility_admin" -> "facility admin"
 export function label(value) {
-  return value ? value.replace(/_/g, ' ') : ''
+  return value ? value.replaceAll('_', ' ') : ''
 }
 
-export function formatDate(iso) {
-  if (!iso) return ''
-  return new Date(iso).toLocaleString()
+export function formatDate(isoString) {
+  if (!isoString) return ''
+  return new Date(isoString).toLocaleString()
 }
 
 export function formatLocation(location) {
   if (!location) return '—'
-  const parts = [location.building, `floor ${location.floor}`]
-  if (location.room) parts.push(location.room)
-  return parts.join(', ')
+  let text = `${location.building}, floor ${location.floor}`
+  if (location.room) text += `, ${location.room}`
+  return text
 }
 
 export function isAdmin(user) {
-  return user?.role === 'facility_admin'
+  return user.role === 'facility_admin'
 }
 
 export function isStaff(user) {
-  return user?.role === 'facility_admin' || user?.role === 'engineer'
+  return user.role === 'facility_admin' || user.role === 'engineer'
 }

@@ -1,42 +1,27 @@
 """
-Inbox view: turns unread summaries into JSON for the frontend.
+Inbox view: turns the grouped unread data into the JSON the frontend expects.
 """
 
-def serialize_item(row):
-    """Render one ticket with unread activity."""
+
+def serialize_item(entry):
+    latest = entry["latest_message"]
     return {
-        "incident": {
-            "id": row["id"],
-            "title": row["title"],
-            "status": row["status"],
-            "priority": row["priority"],
-        },
-        "unreadCount": row["unread_count"],
+        "incident": entry["incident"],
+        "unreadCount": entry["unread_count"],
         "latestMessage": {
-            "message": row["latest_message"],
-            "createdAt": row["latest_at"],
+            "message": latest["message"],
+            "createdAt": latest["created_at"],
             "author": {
-                "id": row["latest_author_id"],
-                "name": row["latest_author_name"],
+                "id": latest["author_id"],
+                "name": latest["author_name"],
             },
         },
     }
 
-def serialize_inbox(rows, total_unread):
-    """Render the inbox list plus the overall count for the nav badge."""
-    return {
-        "unread": total_unread,
-        "items": [serialize_item(row) for row in rows],
-    }
 
-def serialize_count(total_unread):
-    """Render just the count, for cheap polling."""
-    return {"unread": total_unread}
-
-def serialize_read(row, total_unread):
-    """Render the result of marking a ticket read."""
+def serialize_inbox(entries):
+    total = sum(entry["unread_count"] for entry in entries)
     return {
-        "incidentId": row["incident_id"],
-        "lastReadAt": row["last_read_at"],
-        "unread": total_unread,
+        "unread": total,
+        "items": [serialize_item(entry) for entry in entries],
     }

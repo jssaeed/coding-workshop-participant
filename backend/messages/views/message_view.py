@@ -1,9 +1,9 @@
 """
-Message view: turns joined message rows into JSON for the frontend.
+Message view: turns a joined message row into the JSON the frontend expects.
 """
 
+
 def serialize(row):
-    """Render one message row."""
     return {
         "id": row["id"],
         "incidentId": row["incident_id"],
@@ -18,6 +18,6 @@ def serialize(row):
         "updatedAt": row["updated_at"],
     }
 
+
 def serialize_many(rows):
-    """Render a thread of message rows."""
     return [serialize(row) for row in rows]

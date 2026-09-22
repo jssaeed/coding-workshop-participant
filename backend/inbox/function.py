@@ -1,14 +1,13 @@
 """
-Inbox service: unread activity on the caller's tickets.
+Inbox service: changes on your tickets that you have not seen yet.
 
-    GET /api/inbox              tickets with unread messages, newest first
-    GET /api/inbox/count        unread total only (cheap to poll)
-    PUT /api/inbox/{id}/read    mark one ticket's thread read
-    PUT /api/inbox/read-all     mark everything read
+    GET /api/inbox              tickets with unread messages
+    GET /api/inbox/count        the unread total only
+    PUT /api/inbox/{id}/read    mark one ticket's thread as read
+    PUT /api/inbox/read-all     mark everything as read
 
-A message is unread when it is on a ticket you reported or are assigned to,
-someone else wrote it, and you have not opened the ticket since. Status and
-assignment changes are recorded as messages, so they surface here too.
+Status changes and assignments are saved as messages, so they count as
+unread changes too.
 """
 
 import logging
@@ -22,25 +21,26 @@ logger.setLevel(logging.INFO)
 
 SERVICE_NAME = "inbox"
 
+
 def route(event):
-    """Dispatch a request to the controller that handles it."""
+    """Pick the controller function for this method and path."""
     method = http_method(event)
     segments = path_segments(event, SERVICE_NAME)
 
     # /api/inbox
-    if not segments:
+    if len(segments) == 0:
         if method == "GET":
             return inbox_controller.list_inbox(event)
         return method_not_allowed(method)
 
     # /api/inbox/count
-    if segments[0] == "count":
+    if segments == ["count"]:
         if method == "GET":
             return inbox_controller.count(event)
         return method_not_allowed(method)
 
     # /api/inbox/read-all
-    if segments[0] == "read-all":
+    if segments == ["read-all"]:
         if method == "PUT":
             return inbox_controller.mark_all_read(event)
         return method_not_allowed(method)
@@ -54,24 +54,13 @@ def route(event):
 
     return not_found()
 
+
 def handler(event=None, context=None):
-    """
-    Lambda entry point for the inbox service.
-
-    Args:
-        event (dict, optional): The Lambda event
-        context (object, optional): The Lambda context
-
-    Returns:
-        dict: A response object with statusCode, headers, and body
-    """
-    logger.debug("Received event: %s", event)
-
+    """Lambda entry point."""
     try:
         return route(event or {})
     except HttpError as error:
-        logger.info("Request rejected (%s): %s", error.status_code, error.message)
         return error.to_response()
-    except Exception as e:
-        logger.exception("Unhandled error in inbox service: %s", e)
+    except Exception as error:
+        logger.exception("Unhandled error in inbox service: %s", error)
         return json_response(500, {"error": "Internal server error"})

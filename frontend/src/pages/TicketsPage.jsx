@@ -1,90 +1,71 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { incidents } from '../services/api'
 import { STATUSES, formatDate, formatLocation, isAdmin, isStaff, label } from '../services/format'
 import Alert from '../components/Alert'
 
-const EMPTY_TICKET = {
-  title: '',
-  description: '',
-  priority: 3,
-  building: '',
-  floor: '',
-  room: '',
-}
-
-/**
- * Ticket list with scope/status/priority filters, plus a form to file one.
- */
-export default function TicketsPage({ user, onOpen, onApiError }) {
+// The ticket list, with filters and a form to file a new ticket.
+export default function TicketsPage({ user, onOpen }) {
+  // Filters
   const [scope, setScope] = useState('mine')
   const [status, setStatus] = useState('')
   const [priority, setPriority] = useState('')
+
+  // The list
   const [tickets, setTickets] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  // Bumping this number makes the effect below run again (the Refresh button)
+  const [refreshCount, setRefreshCount] = useState(0)
 
+  // The new-ticket form
   const [showForm, setShowForm] = useState(false)
-  const [draft, setDraft] = useState(EMPTY_TICKET)
+  const [title, setTitle] = useState('')
+  const [description, setDescription] = useState('')
+  const [newPriority, setNewPriority] = useState(3)
+  const [building, setBuilding] = useState('')
+  const [floor, setFloor] = useState('')
+  const [room, setRoom] = useState('')
   const [formError, setFormError] = useState('')
   const [saving, setSaving] = useState(false)
 
-  const load = useCallback(async () => {
-    setLoading(true)
-    setError('')
-    try {
-      setTickets(await incidents.list({ scope, status, priority }))
-    } catch (err) {
-      setError(err.message)
-      onApiError(err)
-    } finally {
-      setLoading(false)
-    }
-  }, [scope, status, priority, onApiError])
-
+  // Load the list whenever a filter changes or Refresh is clicked.
   useEffect(() => {
+    async function load() {
+      setLoading(true)
+      setError('')
+      try {
+        setTickets(await incidents.list({ scope, status, priority }))
+      } catch (err) {
+        setError(err.message)
+      } finally {
+        setLoading(false)
+      }
+    }
     load()
-  }, [load])
-
-  function setField(field) {
-    return (event) => setDraft({ ...draft, [field]: event.target.value })
-  }
+  }, [scope, status, priority, refreshCount])
 
   async function handleCreate(event) {
     event.preventDefault()
     setFormError('')
     setSaving(true)
     try {
-      const ticket = {
-        title: draft.title,
-        description: draft.description,
-        priority: Number(draft.priority),
-      }
-      // Location is optional; only send it when a building was given.
-      if (draft.building.trim()) {
-        ticket.location = {
-          building: draft.building,
-          floor: draft.floor,
-          room: draft.room,
-        }
+      const ticket = { title, description, priority: Number(newPriority) }
+      if (building.trim()) {
+        ticket.location = { building, floor, room }
       }
       const created = await incidents.create(ticket)
-      setDraft(EMPTY_TICKET)
-      setShowForm(false)
       onOpen(created.id)
     } catch (err) {
       setFormError(err.message)
-      onApiError(err)
     } finally {
       setSaving(false)
     }
   }
 
-  const scopes = [
-    ['mine', 'My tickets'],
-    isStaff(user) && ['assigned', 'Assigned to me'],
-    isAdmin(user) && ['unassigned', 'Unassigned'],
-    isAdmin(user) && ['all', 'All tickets'],
-  ].filter(Boolean)
+  // Which "Show" options this user gets
+  const scopeOptions = [['mine', 'My tickets']]
+  if (isStaff(user)) scopeOptions.push(['assigned', 'Assigned to me'])
+  if (isAdmin(user)) scopeOptions.push(['unassigned', 'Unassigned'], ['all', 'All tickets'])
 
   return (
     <div>
@@ -100,38 +81,38 @@ export default function TicketsPage({ user, onOpen, onApiError }) {
           <h2>New ticket</h2>
           <label>
             Title
-            <input value={draft.title} onChange={setField('title')} required />
+            <input value={title} onChange={(e) => setTitle(e.target.value)} required />
           </label>
           <label>
             Description
-            <textarea value={draft.description} onChange={setField('description')} rows={3} />
+            <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={3} />
           </label>
           <label>
             Priority (1 = most urgent)
-            <select value={draft.priority} onChange={setField('priority')}>
-              {[1, 2, 3, 4, 5].map((p) => (
-                <option key={p} value={p}>{p}</option>
-              ))}
+            <select value={newPriority} onChange={(e) => setNewPriority(e.target.value)}>
+              <option value="1">1</option>
+              <option value="2">2</option>
+              <option value="3">3</option>
+              <option value="4">4</option>
+              <option value="5">5</option>
             </select>
           </label>
           <div className="row">
             <label>
               Building
-              <input value={draft.building} onChange={setField('building')} />
+              <input value={building} onChange={(e) => setBuilding(e.target.value)} />
             </label>
             <label>
               Floor
-              <input value={draft.floor} onChange={setField('floor')} required={!!draft.building} />
+              <input value={floor} onChange={(e) => setFloor(e.target.value)} required={building !== ''} />
             </label>
             <label>
               Room (optional)
-              <input value={draft.room} onChange={setField('room')} />
+              <input value={room} onChange={(e) => setRoom(e.target.value)} />
             </label>
           </div>
           <Alert error={formError} />
-          <button type="submit" disabled={saving}>
-            {saving ? 'Saving…' : 'File ticket'}
-          </button>
+          <button type="submit" disabled={saving}>File ticket</button>
         </form>
       )}
 
@@ -139,14 +120,14 @@ export default function TicketsPage({ user, onOpen, onApiError }) {
         <label>
           Show
           <select value={scope} onChange={(e) => setScope(e.target.value)}>
-            {scopes.map(([value, text]) => (
+            {scopeOptions.map(([value, text]) => (
               <option key={value} value={value}>{text}</option>
             ))}
           </select>
         </label>
         <label>
           Status
-          <select value={status} onChange={(e) => setStatus(e.target.value)} disabled={scope === 'unassigned'}>
+          <select value={status} onChange={(e) => setStatus(e.target.value)}>
             <option value="">Any</option>
             {STATUSES.map((s) => (
               <option key={s} value={s}>{label(s)}</option>
@@ -155,23 +136,25 @@ export default function TicketsPage({ user, onOpen, onApiError }) {
         </label>
         <label>
           Priority
-          <select value={priority} onChange={(e) => setPriority(e.target.value)} disabled={scope === 'unassigned'}>
+          <select value={priority} onChange={(e) => setPriority(e.target.value)}>
             <option value="">Any</option>
-            {[1, 2, 3, 4, 5].map((p) => (
-              <option key={p} value={p}>{p}</option>
-            ))}
+            <option value="1">1</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+            <option value="5">5</option>
           </select>
         </label>
-        <button type="button" onClick={load} disabled={loading}>Refresh</button>
+        <button type="button" onClick={() => setRefreshCount(refreshCount + 1)}>
+          Refresh
+        </button>
       </div>
 
       <Alert error={error} />
 
-      {loading ? (
-        <p>Loading…</p>
-      ) : tickets.length === 0 ? (
-        <p>No tickets.</p>
-      ) : (
+      {loading && <p>Loading…</p>}
+      {!loading && tickets.length === 0 && <p>No tickets.</p>}
+      {!loading && tickets.length > 0 && (
         <table>
           <thead>
             <tr>
@@ -186,16 +169,18 @@ export default function TicketsPage({ user, onOpen, onApiError }) {
             </tr>
           </thead>
           <tbody>
-            {tickets.map((t) => (
-              <tr key={t.id} onClick={() => onOpen(t.id)} className="clickable">
-                <td>{t.id}</td>
-                <td>{t.title}</td>
-                <td><span className={`badge status-${t.status}`}>{label(t.status)}</span></td>
-                <td>{t.priority}</td>
-                <td>{formatLocation(t.location)}</td>
-                <td>{t.reportedBy.name}</td>
-                <td>{t.assignedTo ? t.assignedTo.name : '—'}</td>
-                <td>{formatDate(t.createdAt)}</td>
+            {tickets.map((ticket) => (
+              <tr key={ticket.id} onClick={() => onOpen(ticket.id)} className="clickable">
+                <td>{ticket.id}</td>
+                <td>{ticket.title}</td>
+                <td>
+                  <span className={`badge status-${ticket.status}`}>{label(ticket.status)}</span>
+                </td>
+                <td>{ticket.priority}</td>
+                <td>{formatLocation(ticket.location)}</td>
+                <td>{ticket.reportedBy.name}</td>
+                <td>{ticket.assignedTo ? ticket.assignedTo.name : '—'}</td>
+                <td>{formatDate(ticket.createdAt)}</td>
               </tr>
             ))}
           </tbody>

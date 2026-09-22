@@ -1,66 +1,52 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { users } from '../services/api'
 import { ROLES, formatDate, label } from '../services/format'
 import Alert from '../components/Alert'
 
-/**
- * Admin-only: every account, with role changes and deletion.
- */
-export default function UsersPage({ user, onApiError }) {
+// Admin only: every account, with a role dropdown and a delete button.
+export default function UsersPage({ user }) {
   const [list, setList] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
-  const [busyId, setBusyId] = useState(null)
-
-  const load = useCallback(async () => {
-    setLoading(true)
-    setError('')
-    try {
-      setList(await users.list())
-    } catch (err) {
-      setError(err.message)
-      onApiError(err)
-    } finally {
-      setLoading(false)
-    }
-  }, [onApiError])
+  const [refreshCount, setRefreshCount] = useState(0)
 
   useEffect(() => {
+    async function load() {
+      setLoading(true)
+      try {
+        setList(await users.list())
+      } catch (err) {
+        setError(err.message)
+      } finally {
+        setLoading(false)
+      }
+    }
     load()
-  }, [load])
+  }, [refreshCount])
 
   async function changeRole(target, role) {
-    if (role === target.role) return
     setError('')
     setSuccess('')
-    setBusyId(target.id)
     try {
       await users.updateRole(target.id, role)
       setSuccess(`${target.name} is now ${label(role)}. They will see the change after signing in again.`)
-      await load()
+      setRefreshCount(refreshCount + 1)
     } catch (err) {
       setError(err.message)
-      onApiError(err)
-    } finally {
-      setBusyId(null)
     }
   }
 
-  async function remove(target) {
+  async function deleteUser(target) {
     if (!window.confirm(`Delete ${target.name} (${target.email})?`)) return
     setError('')
     setSuccess('')
-    setBusyId(target.id)
     try {
       await users.remove(target.id)
       setSuccess(`${target.name} deleted.`)
-      await load()
+      setRefreshCount(refreshCount + 1)
     } catch (err) {
       setError(err.message)
-      onApiError(err)
-    } finally {
-      setBusyId(null)
     }
   }
 
@@ -69,9 +55,8 @@ export default function UsersPage({ user, onApiError }) {
       <h1>Users</h1>
       <Alert error={error} success={success} />
 
-      {loading ? (
-        <p>Loading…</p>
-      ) : (
+      {loading && <p>Loading…</p>}
+      {!loading && (
         <table>
           <thead>
             <tr>
@@ -83,30 +68,27 @@ export default function UsersPage({ user, onApiError }) {
             </tr>
           </thead>
           <tbody>
-            {list.map((u) => {
-              const self = u.id === user.id
+            {list.map((account) => {
+              // You cannot change or delete your own account
+              const isMe = account.id === user.id
               return (
-                <tr key={u.id}>
-                  <td>{u.name}{self && ' (you)'}</td>
-                  <td>{u.email}</td>
+                <tr key={account.id}>
+                  <td>{account.name}{isMe && ' (you)'}</td>
+                  <td>{account.email}</td>
                   <td>
                     <select
-                      value={u.role}
-                      onChange={(e) => changeRole(u, e.target.value)}
-                      disabled={self || busyId === u.id}
+                      value={account.role}
+                      onChange={(e) => changeRole(account, e.target.value)}
+                      disabled={isMe}
                     >
-                      {ROLES.map((r) => (
-                        <option key={r} value={r}>{label(r)}</option>
+                      {ROLES.map((role) => (
+                        <option key={role} value={role}>{label(role)}</option>
                       ))}
                     </select>
                   </td>
-                  <td>{formatDate(u.createdAt)}</td>
+                  <td>{formatDate(account.createdAt)}</td>
                   <td>
-                    <button
-                      type="button"
-                      onClick={() => remove(u)}
-                      disabled={self || busyId === u.id}
-                    >
+                    <button type="button" onClick={() => deleteUser(account)} disabled={isMe}>
                       Delete
                     </button>
                   </td>

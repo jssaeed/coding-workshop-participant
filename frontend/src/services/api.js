@@ -1,137 +1,105 @@
 /**
- * API client for the backend services.
+ * All calls to the backend go through this file.
  *
- * Every call goes through request(), which attaches the stored token, sends
- * JSON, and turns non-2xx responses into ApiError so pages can show the
- * backend's own message ("'priority' must be between 1 and 5").
+ * request() adds the login token, sends and receives JSON, and turns error
+ * responses into thrown errors with the backend's message, so pages can
+ * show it with a plain try/catch.
  */
 
-// Empty in the cloud, where the frontend and /api share a CloudFront origin.
-const BASE_URL = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '')
+// In the cloud this is empty: the frontend and /api share the same domain.
+const BASE_URL = import.meta.env.VITE_API_URL || ''
 
-const TOKEN_KEY = 'token'
-const USER_KEY = 'user'
-
-export class ApiError extends Error {
-  constructor(status, message, details) {
-    super(message)
-    this.status = status
-    this.details = details
-  }
-}
-
-// --- session ---------------------------------------------------------------
-// localStorage can throw in private windows; a failed read just means "not
-// signed in".
+// --- the login session (kept in localStorage so a refresh keeps you signed in)
 
 export function getToken() {
-  try {
-    return localStorage.getItem(TOKEN_KEY)
-  } catch {
-    return null
-  }
+  return localStorage.getItem('token')
 }
 
 export function getStoredUser() {
-  try {
-    const raw = localStorage.getItem(USER_KEY)
-    return raw ? JSON.parse(raw) : null
-  } catch {
-    return null
-  }
+  const user = localStorage.getItem('user')
+  return user ? JSON.parse(user) : null
 }
 
 export function saveSession(user, token) {
-  try {
-    localStorage.setItem(TOKEN_KEY, token)
-    localStorage.setItem(USER_KEY, JSON.stringify(user))
-  } catch {
-    // Session still works for this page load; it just won't survive a refresh.
-  }
+  localStorage.setItem('token', token)
+  localStorage.setItem('user', JSON.stringify(user))
 }
 
 export function clearSession() {
-  try {
-    localStorage.removeItem(TOKEN_KEY)
-    localStorage.removeItem(USER_KEY)
-  } catch {
-    // Nothing to clear.
-  }
+  localStorage.removeItem('token')
+  localStorage.removeItem('user')
 }
 
-// --- transport -------------------------------------------------------------
+// --- sending requests
 
-async function request(method, path, { body, query } = {}) {
-  const url = new URL(`${BASE_URL}/api${path}`, window.location.origin)
-  for (const [key, value] of Object.entries(query || {})) {
-    if (value !== undefined && value !== null && value !== '') {
-      url.searchParams.set(key, value)
+async function request(method, path, body, query) {
+  let url = BASE_URL + '/api' + path
+  if (query) {
+    // Turn {status: "open", priority: ""} into "?status=open" (empty values skipped)
+    const params = new URLSearchParams()
+    for (const [key, value] of Object.entries(query)) {
+      if (value !== undefined && value !== null && value !== '') {
+        params.set(key, value)
+      }
     }
+    const queryString = params.toString()
+    if (queryString) url += '?' + queryString
   }
 
   const headers = { 'Content-Type': 'application/json' }
   const token = getToken()
-  if (token) headers.Authorization = `Bearer ${token}`
-
-  let response
-  try {
-    response = await fetch(url, {
-      method,
-      headers,
-      body: body === undefined ? undefined : JSON.stringify(body),
-    })
-  } catch {
-    throw new ApiError(0, 'Could not reach the server')
+  if (token) {
+    headers.Authorization = 'Bearer ' + token
   }
 
+  const response = await fetch(url, {
+    method,
+    headers,
+    body: body ? JSON.stringify(body) : undefined,
+  })
+
+  // 204 means success with no body (used after deleting)
   if (response.status === 204) return null
 
-  let data = null
-  try {
-    data = await response.json()
-  } catch {
-    // No JSON body (e.g. a gateway error page).
-  }
+  const data = await response.json()
 
   if (!response.ok) {
-    throw new ApiError(
-      response.status,
-      data?.error || `Request failed (${response.status})`,
-      data?.details,
-    )
+    // 401 on a request that sent a token means the session is no longer
+    // valid (expired token, deleted account). Sign out and start over.
+    if (response.status === 401 && token) {
+      clearSession()
+      window.location.reload()
+    }
+    const error = new Error(data.error || 'Request failed')
+    error.status = response.status
+    throw error
   }
+
   return data
 }
 
-// --- endpoints -------------------------------------------------------------
+// --- the endpoints, grouped by service
 
 export const users = {
-  signup: (email, password, name) =>
-    request('POST', '/users', { body: { email, password, name } }),
-  login: (email, password) =>
-    request('POST', '/users/login', { body: { email, password } }),
+  signup: (email, password, name) => request('POST', '/users', { email, password, name }),
+  login: (email, password) => request('POST', '/users/login', { email, password }),
   me: () => request('GET', '/users/me'),
-  list: (role) => request('GET', '/users', { query: { role } }),
-  updateRole: (id, role) => request('PUT', `/users/${id}/role`, { body: { role } }),
+  list: () => request('GET', '/users'),
+  updateRole: (id, role) => request('PUT', `/users/${id}/role`, { role }),
   remove: (id) => request('DELETE', `/users/${id}`),
 }
 
 export const incidents = {
-  create: (ticket) => request('POST', '/incidents', { body: ticket }),
-  list: ({ scope, status, priority } = {}) =>
-    request('GET', '/incidents', { query: { scope, status, priority } }),
+  create: (ticket) => request('POST', '/incidents', ticket),
+  list: (filters) => request('GET', '/incidents', null, filters),
   get: (id) => request('GET', `/incidents/${id}`),
-  locations: () => request('GET', '/incidents/locations'),
-  assign: (id, assigneeId) =>
-    request('PUT', `/incidents/${id}/assign`, { body: { assigneeId } }),
-  updateStatus: (id, status) =>
-    request('PUT', `/incidents/${id}/status`, { body: { status } }),
+  assign: (id, assigneeId) => request('PUT', `/incidents/${id}/assign`, { assigneeId }),
+  updateStatus: (id, status) => request('PUT', `/incidents/${id}/status`, { status }),
 }
 
 export const messages = {
-  list: (incidentId) => request('GET', '/messages', { query: { incidentId } }),
-  create: (incidentId, message) =>
-    request('POST', '/messages', { body: { incidentId, message } }),
+  list: (incidentId) => request('GET', '/messages', null, { incidentId }),
+  create: (incidentId, message) => request('POST', '/messages', { incidentId, message }),
 }
 
 export const inbox = {

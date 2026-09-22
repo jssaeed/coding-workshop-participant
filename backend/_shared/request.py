@@ -1,8 +1,9 @@
 """
-Reading a Lambda Function URL event: method, path, query string, body.
+Reading the incoming request, shared by every service.
 
-CloudFront and the local proxy both forward requests in the Function URL
-(payload v2) shape, so services parse them the same way in both environments.
+Lambda gives the request as a dict called "event". These helpers pull out the
+parts a service needs: the HTTP method, the path, the query string, the
+headers and the JSON body.
 """
 
 import base64
@@ -10,89 +11,81 @@ import json
 
 from .responses import HttpError
 
-def http_method(event):
-    """Return the request's HTTP method in upper case."""
-    return (
-        event.get("requestContext", {})
-        .get("http", {})
-        .get("method", "GET")
-        .upper()
-    )
 
-def raw_path(event):
-    """Return the request path, e.g. /api/incidents/12/status."""
-    return event.get("rawPath") or event.get("path") or "/"
+def http_method(event):
+    """Return the HTTP method in upper case, e.g. "GET" or "POST"."""
+    request_context = event.get("requestContext", {})
+    http = request_context.get("http", {})
+    return http.get("method", "GET").upper()
+
 
 def path_segments(event, service_name):
     """
-    Return the path parts after /api/<service_name>.
+    Split the path into parts, without the "/api/<service>" prefix.
 
-    /api/incidents/12/status -> ["12", "status"]
-    /api/incidents           -> []
+    For the incidents service:
+        /api/incidents/12/status  ->  ["12", "status"]
+        /api/incidents            ->  []
     """
-    path = raw_path(event).strip("/")
-    parts = [part for part in path.split("/") if part]
+    path = event.get("rawPath") or "/"
+    parts = [part for part in path.split("/") if part != ""]
 
-    # Drop the /api prefix and the service name, whichever are present. The
-    # local proxy and CloudFront can differ on how much of the prefix survives.
     if parts and parts[0] == "api":
         parts = parts[1:]
     if parts and parts[0] == service_name:
         parts = parts[1:]
     return parts
 
-def query_params(event):
-    """Return the query string parameters as a dict."""
-    return event.get("queryStringParameters") or {}
-
-def headers(event):
-    """Return request headers with lower-cased names."""
-    return {
-        str(key).lower(): value
-        for key, value in (event.get("headers") or {}).items()
-    }
-
-def json_body(event):
-    """
-    Parse the request body as a JSON object.
-
-    Returns:
-        dict: the parsed body, or {} when there is no body
-
-    Raises:
-        HttpError: 400 when the body is not a JSON object
-    """
-    body = event.get("body")
-    if body is None or body == "":
-        return {}
-
-    if event.get("isBase64Encoded"):
-        try:
-            body = base64.b64decode(body).decode("utf-8")
-        except Exception as exc:
-            raise HttpError(400, "Request body could not be decoded") from exc
-
-    try:
-        parsed = json.loads(body)
-    except (ValueError, TypeError) as exc:
-        raise HttpError(400, "Request body must be valid JSON") from exc
-
-    if not isinstance(parsed, dict):
-        raise HttpError(400, "Request body must be a JSON object")
-    return parsed
 
 def path_id(segments, index=0):
     """
-    Read a positive integer id out of the path.
+    Read a record id from the path, e.g. the "12" in /api/incidents/12.
 
-    Raises:
-        HttpError: 404 when the segment is missing or not a positive integer,
-            since a non-numeric id can never match a record
+    Anything that is not a positive whole number gets a 404, because it can
+    never match a record.
     """
     try:
         value = int(segments[index])
-    except (IndexError, ValueError) as exc:
-        raise HttpError(404, "Resource not found") from exc
+    except (IndexError, ValueError):
+        raise HttpError(404, "Resource not found")
+
     if value < 1:
         raise HttpError(404, "Resource not found")
     return value
+
+
+def query_params(event):
+    """Return the query string as a dict, e.g. {"status": "open"}."""
+    return event.get("queryStringParameters") or {}
+
+
+def headers(event):
+    """Return the request headers with lower-case names."""
+    result = {}
+    for name, value in (event.get("headers") or {}).items():
+        result[name.lower()] = value
+    return result
+
+
+def json_body(event):
+    """
+    Parse the request body as JSON and return it as a dict.
+
+    An empty body gives {}. A body that is not a JSON object gives a 400.
+    """
+    body = event.get("body")
+    if not body:
+        return {}
+
+    # Lambda sometimes delivers the body base64-encoded.
+    if event.get("isBase64Encoded"):
+        body = base64.b64decode(body).decode("utf-8")
+
+    try:
+        data = json.loads(body)
+    except ValueError:
+        raise HttpError(400, "Request body must be valid JSON")
+
+    if not isinstance(data, dict):
+        raise HttpError(400, "Request body must be a JSON object")
+    return data

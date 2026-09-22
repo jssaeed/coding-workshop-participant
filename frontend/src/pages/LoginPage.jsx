@@ -2,32 +2,46 @@ import { useState } from 'react'
 import { users } from '../services/api'
 import Alert from '../components/Alert'
 
-/**
- * Sign in, or create an account and sign straight in.
- */
+// Only company addresses may sign up
+const COMPANY_EMAIL_DOMAIN = '@acme.inc'
+
+// Sign in, or create an account and then sign in with it.
 export default function LoginPage({ onLogin }) {
-  const [mode, setMode] = useState('login')
+  const [mode, setMode] = useState('login') // 'login' or 'signup'
+  const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const [name, setName] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
 
   async function handleSubmit(event) {
     event.preventDefault()
     setError('')
+
+    // Same rule as the backend, checked here so the message shows before
+    // the request is sent.
+    if (mode === 'signup' && !email.trim().toLowerCase().endsWith(COMPANY_EMAIL_DOMAIN)) {
+      setError(`Use your company email address (ending in ${COMPANY_EMAIL_DOMAIN})`)
+      return
+    }
+
     setBusy(true)
     try {
       if (mode === 'signup') {
         await users.signup(email, password, name)
       }
-      const { user, token } = await users.login(email, password)
-      onLogin(user, token)
+      const result = await users.login(email, password)
+      onLogin(result.user, result.token)
     } catch (err) {
       setError(err.message)
     } finally {
       setBusy(false)
     }
+  }
+
+  function switchMode() {
+    setMode(mode === 'login' ? 'signup' : 'login')
+    setError('')
   }
 
   return (
@@ -43,13 +57,8 @@ export default function LoginPage({ onLogin }) {
           </label>
         )}
         <label>
-          Email
-          <input
-            type="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            required
-          />
+          Email {mode === 'signup' && <span className="muted">(your {COMPANY_EMAIL_DOMAIN} address)</span>}
+          <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
         </label>
         <label>
           Password
@@ -65,20 +74,13 @@ export default function LoginPage({ onLogin }) {
         <Alert error={error} />
 
         <button type="submit" disabled={busy}>
-          {busy ? 'Please wait…' : mode === 'login' ? 'Sign in' : 'Create account'}
+          {mode === 'login' ? 'Sign in' : 'Create account'}
         </button>
       </form>
 
       <p>
         {mode === 'login' ? 'No account yet? ' : 'Already have an account? '}
-        <button
-          type="button"
-          className="link"
-          onClick={() => {
-            setMode(mode === 'login' ? 'signup' : 'login')
-            setError('')
-          }}
-        >
+        <button type="button" className="link" onClick={switchMode}>
           {mode === 'login' ? 'Create one' : 'Sign in'}
         </button>
       </p>

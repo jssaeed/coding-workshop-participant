@@ -1,8 +1,8 @@
 """
-Inbox controller: what a user has not seen yet, and marking it seen.
+Inbox controller: what the signed-in user has not seen yet.
 
-Everything here is scoped to the caller. There is no way to read or change
-another user's inbox, and admins get no special view: an inbox is personal.
+The inbox is personal. Every function works on the caller's own inbox; there
+is no way to look at anyone else's.
 """
 
 import logging
@@ -14,44 +14,48 @@ from views import inbox_view
 
 logger = logging.getLogger()
 
+
 def list_inbox(event):
-    """Tickets with unread activity for the caller, most recent first."""
+    """GET /api/inbox - tickets with unread messages, most recent first."""
     caller = auth.current_user(event)
-    rows = inbox_model.unread_by_ticket(caller["id"])
-    # Summing the rows avoids a second query for the total.
-    total = sum(row["unread_count"] for row in rows)
-    return ok(inbox_view.serialize_inbox(rows, total))
+    entries = inbox_model.unread_by_ticket(caller["id"])
+    return ok(inbox_view.serialize_inbox(entries))
+
 
 def count(event):
-    """Just the unread total, for the nav badge to poll."""
+    """GET /api/inbox/count - just the unread total, for the badge."""
     caller = auth.current_user(event)
-    return ok(inbox_view.serialize_count(inbox_model.unread_count(caller["id"])))
+    return ok({"unread": inbox_model.unread_count(caller["id"])})
+
 
 def mark_read(event, incident_id):
-    """
-    Mark one ticket's thread as read up to now.
-
-    Allowed for anyone who can see the ticket (reporter, assignee, admin).
-    Others get 404 so the endpoint does not reveal which ticket ids exist.
-    """
+    """PUT /api/inbox/{id}/read - the caller has seen this ticket's thread."""
     caller = auth.current_user(event)
 
-    incident = inbox_model.find_access_row(incident_id)
+    incident = inbox_model.find_basic_incident(incident_id)
     if incident is None:
         raise HttpError(404, "Incident not found")
-    if not (
+
+    allowed = (
         auth.is_admin(caller)
         or incident["reported_by"] == caller["id"]
         or incident["assigned_to"] == caller["id"]
-    ):
+    )
+    if not allowed:
         raise HttpError(404, "Incident not found")
 
     row = inbox_model.mark_read(caller["id"], incident_id)
-    return ok(inbox_view.serialize_read(row, inbox_model.unread_count(caller["id"])))
+    return ok({
+        "incidentId": row["incident_id"],
+        "lastReadAt": row["last_read_at"],
+        # The remaining total, so the frontend badge can update right away.
+        "unread": inbox_model.unread_count(caller["id"]),
+    })
+
 
 def mark_all_read(event):
-    """Mark every ticket the caller is involved in as read up to now."""
+    """PUT /api/inbox/read-all - the caller has seen everything."""
     caller = auth.current_user(event)
     inbox_model.mark_all_read(caller["id"])
-    logger.info("User %s marked inbox read", caller["id"])
-    return ok(inbox_view.serialize_count(0))
+    logger.info("User %s marked their inbox read", caller["id"])
+    return ok({"unread": 0})

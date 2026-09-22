@@ -1,14 +1,15 @@
 """
-Incidents service: filing, reading, assigning and progressing tickets.
+Incidents service: tickets.
 
-    POST /api/incidents               file a ticket (any account)
-    GET  /api/incidents               list tickets, see ?scope= below
-    GET  /api/incidents/locations     known buildings and floors
-    GET  /api/incidents/{id}          one ticket (reporter, assignee or admin)
-    PUT  /api/incidents/{id}/assign   assign to an engineer (admin)
-    PUT  /api/incidents/{id}/status   change status (assigned engineer or admin)
+    POST /api/incidents               file a ticket
+    GET  /api/incidents               list tickets (?scope=mine|assigned|unassigned|all)
+    GET  /api/incidents/locations     known buildings, floors and rooms
+    GET  /api/incidents/{id}          one ticket
+    PUT  /api/incidents/{id}/assign   assign an engineer (admin)
+    PUT  /api/incidents/{id}/status   change the status (assignee or admin)
 
-Scopes for the list route: mine (default), assigned, unassigned, all.
+This file only decides which controller function handles the request. The
+rules live in controllers/, the SQL in models/, the JSON shape in views/.
 """
 
 import logging
@@ -22,13 +23,14 @@ logger.setLevel(logging.INFO)
 
 SERVICE_NAME = "incidents"
 
+
 def route(event):
-    """Dispatch a request to the controller that handles it."""
+    """Pick the controller function for this method and path."""
     method = http_method(event)
     segments = path_segments(event, SERVICE_NAME)
 
     # /api/incidents
-    if not segments:
+    if len(segments) == 0:
         if method == "POST":
             return incident_controller.create_incident(event)
         if method == "GET":
@@ -36,7 +38,7 @@ def route(event):
         return method_not_allowed(method)
 
     # /api/incidents/locations
-    if segments[0] == "locations":
+    if segments == ["locations"]:
         if method == "GET":
             return incident_controller.list_locations(event)
         return method_not_allowed(method)
@@ -49,40 +51,27 @@ def route(event):
             return incident_controller.get_incident(event, incident_id)
         return method_not_allowed(method)
 
-    action = segments[1]
-
     # /api/incidents/{id}/assign
-    if action == "assign":
+    if len(segments) == 2 and segments[1] == "assign":
         if method == "PUT":
             return incident_controller.assign_incident(event, incident_id)
         return method_not_allowed(method)
 
     # /api/incidents/{id}/status
-    if action == "status":
+    if len(segments) == 2 and segments[1] == "status":
         if method == "PUT":
             return incident_controller.update_status(event, incident_id)
         return method_not_allowed(method)
 
     return not_found()
 
+
 def handler(event=None, context=None):
-    """
-    Lambda entry point for the incidents service.
-
-    Args:
-        event (dict, optional): The Lambda event
-        context (object, optional): The Lambda context
-
-    Returns:
-        dict: A response object with statusCode, headers, and body
-    """
-    logger.debug("Received event: %s", event)
-
+    """Lambda entry point."""
     try:
         return route(event or {})
     except HttpError as error:
-        logger.info("Request rejected (%s): %s", error.status_code, error.message)
         return error.to_response()
-    except Exception as e:
-        logger.exception("Unhandled error in incidents service: %s", e)
+    except Exception as error:
+        logger.exception("Unhandled error in incidents service: %s", error)
         return json_response(500, {"error": "Internal server error"})

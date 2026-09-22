@@ -1,67 +1,63 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { inbox, incidents, messages, users } from '../services/api'
 import { STATUSES, formatDate, formatLocation, isAdmin, isStaff, label } from '../services/format'
 import Alert from '../components/Alert'
 
-/**
- * One ticket: details, assignment (admin), status (assigned engineer or
- * admin), and the message thread.
- */
-export default function TicketPage({ id, user, onBack, onApiError, onCountChange }) {
+// One ticket: its details, the actions the user is allowed to take, and the
+// message thread. Opening the page marks the ticket as read.
+export default function TicketPage({ id, user, onBack, setUnread }) {
   const [ticket, setTicket] = useState(null)
   const [thread, setThread] = useState([])
-  const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  // Bumping this number reloads the ticket after an action
+  const [refreshCount, setRefreshCount] = useState(0)
 
-  const [staff, setStaff] = useState([])
+  // Actions
+  const [staff, setStaff] = useState([]) // engineers and admins, for the assign dropdown
   const [assignee, setAssignee] = useState('')
   const [status, setStatus] = useState('')
-  const [draft, setDraft] = useState('')
+  const [newMessage, setNewMessage] = useState('')
   const [actionError, setActionError] = useState('')
   const [busy, setBusy] = useState(false)
 
-  const load = useCallback(async () => {
-    setError('')
-    try {
-      const [t, m] = await Promise.all([incidents.get(id), messages.list(id)])
-      setTicket(t)
-      setThread(m)
-      setAssignee(t.assignedTo ? String(t.assignedTo.id) : '')
-      setStatus(t.status)
-      // Seeing the thread is what "read" means; the response carries the
-      // caller's remaining unread total so the nav badge updates at once.
-      const read = await inbox.markRead(id)
-      onCountChange(read.unread)
-    } catch (err) {
-      setError(err.message)
-      onApiError(err)
-    } finally {
-      setLoading(false)
-    }
-  }, [id, onApiError, onCountChange])
-
+  // Load the ticket and its thread, then mark the ticket as read.
   useEffect(() => {
-    load()
-  }, [load])
+    async function load() {
+      setError('')
+      try {
+        const loadedTicket = await incidents.get(id)
+        setTicket(loadedTicket)
+        setAssignee(loadedTicket.assignedTo ? String(loadedTicket.assignedTo.id) : '')
+        setStatus(loadedTicket.status)
+        setThread(await messages.list(id))
 
-  // Only admins can assign, and only they may list users.
+        const read = await inbox.markRead(id)
+        setUnread(read.unread) // update the badge in the nav
+      } catch (err) {
+        setError(err.message)
+      } finally {
+        setLoading(false)
+      }
+    }
+    load()
+  }, [id, refreshCount, setUnread])
+
+  // Admins need the list of engineers to assign tickets to.
   useEffect(() => {
     if (!isAdmin(user)) return
-    users
-      .list()
-      .then((all) => setStaff(all.filter(isStaff)))
-      .catch(onApiError)
-  }, [user, onApiError])
+    users.list().then((all) => setStaff(all.filter(isStaff)))
+  }, [user])
 
-  async function run(action) {
+  // Run an action, then reload the ticket so the page shows the result.
+  async function runAction(action) {
     setActionError('')
     setBusy(true)
     try {
       await action()
-      await load()
+      setRefreshCount(refreshCount + 1)
     } catch (err) {
       setActionError(err.message)
-      onApiError(err)
     } finally {
       setBusy(false)
     }
@@ -69,23 +65,24 @@ export default function TicketPage({ id, user, onBack, onApiError, onCountChange
 
   function handleAssign(event) {
     event.preventDefault()
-    run(() => incidents.assign(id, assignee ? Number(assignee) : null))
+    runAction(() => incidents.assign(id, assignee ? Number(assignee) : null))
   }
 
   function handleStatus(event) {
     event.preventDefault()
-    run(() => incidents.updateStatus(id, status))
+    runAction(() => incidents.updateStatus(id, status))
   }
 
   function handlePost(event) {
     event.preventDefault()
-    run(async () => {
-      await messages.create(id, draft)
-      setDraft('')
+    runAction(async () => {
+      await messages.create(id, newMessage)
+      setNewMessage('')
     })
   }
 
   if (loading) return <p>Loading…</p>
+
   if (!ticket) {
     return (
       <div>
@@ -95,10 +92,10 @@ export default function TicketPage({ id, user, onBack, onApiError, onCountChange
     )
   }
 
-  // The backend enforces this too; mirroring it here hides controls the
-  // caller cannot use.
-  const canChangeStatus = isAdmin(user) || ticket.assignedTo?.id === user.id
-  const closed = ticket.status === 'closed'
+  // The backend checks these too; this just hides buttons that would fail.
+  const canAssign = isAdmin(user)
+  const canChangeStatus = isAdmin(user) || (ticket.assignedTo && ticket.assignedTo.id === user.id)
+  const isClosed = ticket.status === 'closed'
 
   return (
     <div>
@@ -112,34 +109,49 @@ export default function TicketPage({ id, user, onBack, onApiError, onCountChange
       <Alert error={error} />
 
       <dl className="details">
-        <dt>Priority</dt><dd>{ticket.priority}</dd>
-        <dt>Location</dt><dd>{formatLocation(ticket.location)}</dd>
-        <dt>Reported by</dt><dd>{ticket.reportedBy.name} ({ticket.reportedBy.email})</dd>
-        <dt>Assigned to</dt><dd>{ticket.assignedTo ? ticket.assignedTo.name : 'Unassigned'}</dd>
-        <dt>Created</dt><dd>{formatDate(ticket.createdAt)}</dd>
-        <dt>Updated</dt><dd>{formatDate(ticket.updatedAt)}</dd>
-        {ticket.resolvedAt && (<><dt>Resolved</dt><dd>{formatDate(ticket.resolvedAt)}</dd></>)}
+        <dt>Priority</dt>
+        <dd>{ticket.priority}</dd>
+        <dt>Location</dt>
+        <dd>{formatLocation(ticket.location)}</dd>
+        <dt>Reported by</dt>
+        <dd>{ticket.reportedBy.name} ({ticket.reportedBy.email})</dd>
+        <dt>Assigned to</dt>
+        <dd>{ticket.assignedTo ? ticket.assignedTo.name : 'Unassigned'}</dd>
+        <dt>Created</dt>
+        <dd>{formatDate(ticket.createdAt)}</dd>
+        <dt>Updated</dt>
+        <dd>{formatDate(ticket.updatedAt)}</dd>
+        {ticket.resolvedAt && (
+          <>
+            <dt>Resolved</dt>
+            <dd>{formatDate(ticket.resolvedAt)}</dd>
+          </>
+        )}
       </dl>
 
       {ticket.description && <p className="description">{ticket.description}</p>}
 
-      {(isAdmin(user) || canChangeStatus) && (
+      {(canAssign || canChangeStatus) && (
         <div className="panel">
           <h2>Actions</h2>
-          {isAdmin(user) && (
+
+          {canAssign && (
             <form onSubmit={handleAssign} className="row">
               <label>
                 Assign to
                 <select value={assignee} onChange={(e) => setAssignee(e.target.value)}>
                   <option value="">Unassigned</option>
-                  {staff.map((s) => (
-                    <option key={s.id} value={s.id}>{s.name} ({label(s.role)})</option>
+                  {staff.map((person) => (
+                    <option key={person.id} value={person.id}>
+                      {person.name} ({label(person.role)})
+                    </option>
                   ))}
                 </select>
               </label>
               <button type="submit" disabled={busy}>Assign</button>
             </form>
           )}
+
           {canChangeStatus && (
             <form onSubmit={handleStatus} className="row">
               <label>
@@ -150,41 +162,48 @@ export default function TicketPage({ id, user, onBack, onApiError, onCountChange
                   ))}
                 </select>
               </label>
-              <button type="submit" disabled={busy || status === ticket.status}>Update status</button>
+              <button type="submit" disabled={busy || status === ticket.status}>
+                Update status
+              </button>
             </form>
           )}
-          <Alert error={actionError} />
         </div>
       )}
 
       <h2>Messages</h2>
-      {thread.length === 0 ? (
-        <p>No messages yet.</p>
-      ) : (
+      {thread.length === 0 && <p>No messages yet.</p>}
+      {thread.length > 0 && (
         <ul className="thread">
-          {thread.map((m) => (
-            <li key={m.id}>
+          {thread.map((message) => (
+            <li key={message.id}>
               <div className="meta">
-                <strong>{m.author.name}</strong> ({label(m.author.role)}) · {formatDate(m.createdAt)}
+                <strong>{message.author.name}</strong> ({label(message.author.role)}) ·{' '}
+                {formatDate(message.createdAt)}
               </div>
-              <div>{m.message}</div>
+              <div>{message.message}</div>
             </li>
           ))}
         </ul>
       )}
 
-      {closed ? (
+      {isClosed ? (
         <p className="muted">This ticket is closed. Reopen it to post again.</p>
       ) : (
         <form onSubmit={handlePost}>
           <label>
             New message
-            <textarea value={draft} onChange={(e) => setDraft(e.target.value)} rows={3} required />
+            <textarea
+              value={newMessage}
+              onChange={(e) => setNewMessage(e.target.value)}
+              rows={3}
+              required
+            />
           </label>
-          {!isAdmin(user) && !canChangeStatus && <Alert error={actionError} />}
-          <button type="submit" disabled={busy || !draft.trim()}>Post</button>
+          <button type="submit" disabled={busy || newMessage.trim() === ''}>Post</button>
         </form>
       )}
+
+      <Alert error={actionError} />
     </div>
   )
 }

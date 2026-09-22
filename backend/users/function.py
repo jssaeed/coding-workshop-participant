@@ -1,13 +1,15 @@
 """
-Users service: accounts, login and role management.
+Users service: accounts, login and roles.
 
-    POST   /api/users            create an employee account (public)
-    POST   /api/users/login      log in, returns an access token
+    POST   /api/users            sign up (always creates an employee)
+    POST   /api/users/login      log in, returns a token
     GET    /api/users/me         the signed-in user
     GET    /api/users            list accounts (admin)
-    GET    /api/users/{id}       one account (admin)
-    PUT    /api/users/{id}/role  promote or demote (admin)
+    PUT    /api/users/{id}/role  change a role (admin)
     DELETE /api/users/{id}       delete an account (admin)
+
+This file only decides which controller function handles the request. The
+rules live in controllers/, the SQL in models/, the JSON shape in views/.
 """
 
 import logging
@@ -21,13 +23,14 @@ logger.setLevel(logging.INFO)
 
 SERVICE_NAME = "users"
 
+
 def route(event):
-    """Dispatch a request to the controller that handles it."""
+    """Pick the controller function for this method and path."""
     method = http_method(event)
     segments = path_segments(event, SERVICE_NAME)
 
     # /api/users
-    if not segments:
+    if len(segments) == 0:
         if method == "POST":
             return user_controller.create_account(event)
         if method == "GET":
@@ -35,24 +38,18 @@ def route(event):
         return method_not_allowed(method)
 
     # /api/users/login
-    if segments[0] == "login":
+    if segments == ["login"]:
         if method == "POST":
             return user_controller.login(event)
         return method_not_allowed(method)
 
     # /api/users/me
-    if segments[0] == "me":
+    if segments == ["me"]:
         if method == "GET":
             return user_controller.me(event)
         return method_not_allowed(method)
 
     user_id = path_id(segments)
-
-    # /api/users/{id}/role
-    if len(segments) > 1 and segments[1] == "role":
-        if method == "PUT":
-            return user_controller.update_role(event, user_id)
-        return method_not_allowed(method)
 
     # /api/users/{id}
     if len(segments) == 1:
@@ -60,29 +57,24 @@ def route(event):
             return user_controller.delete_user(event, user_id)
         return method_not_allowed(method)
 
+    # /api/users/{id}/role
+    if len(segments) == 2 and segments[1] == "role":
+        if method == "PUT":
+            return user_controller.update_role(event, user_id)
+        return method_not_allowed(method)
+
     return not_found()
 
+
 def handler(event=None, context=None):
-    """
-    Lambda entry point for the users service.
-
-    Args:
-        event (dict, optional): The Lambda event
-        context (object, optional): The Lambda context
-
-    Returns:
-        dict: A response object with statusCode, headers, and body
-    """
-    logger.debug("Received event: %s", event)
-
+    """Lambda entry point."""
     try:
         return route(event or {})
     except HttpError as error:
-        # Expected failures: validation, auth, missing records.
-        logger.info("Request rejected (%s): %s", error.status_code, error.message)
+        # Expected problems: bad input, not logged in, no such record.
         return error.to_response()
-    except Exception as e:
-        # Unexpected failures: log the detail, return a generic message so
-        # internals are not exposed to clients.
-        logger.exception("Unhandled error in users service: %s", e)
+    except Exception as error:
+        # Anything else is a bug or an outage. Log the details, but do not
+        # send them to the client.
+        logger.exception("Unhandled error in users service: %s", error)
         return json_response(500, {"error": "Internal server error"})

@@ -1,16 +1,14 @@
 """
-Read-only view of the incidents table for the messages service.
+A read-only look at the incidents table, for checking who may use a thread.
 
-A message is only as private as its ticket, so posting and reading both start
-by checking who the ticket belongs to. Ticket management itself lives in the
-incidents service.
+Tickets themselves are managed by the incidents service.
 """
 
 from lib.database import fetch_one
 
-def find_access_row(incident_id):
-    """Return the columns needed to decide who may read or post, or None."""
+
+def find_basic(incident_id):
     return fetch_one(
-        "SELECT id, reported_by, assigned_to, status FROM incidents WHERE id = %s",
+        "SELECT id, status, reported_by, assigned_to FROM incidents WHERE id = %s",
         (incident_id,),
     )

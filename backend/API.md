@@ -13,7 +13,7 @@ Five Lambda services behind `/api/`: `users`, `incidents`, `messages`, `inbox`, 
 2. Create the tables: `curl -X POST http://localhost:3001/api/migrations`
 3. Sign up your first user (see `POST /api/users`), then make them an admin directly in the database — signup only ever creates employees, and only an admin can promote:
    ```sh
-   psql -h localhost -U postgres -c "UPDATE users SET role = 'facility_admin' WHERE email = 'you@example.com'"
+   psql -h localhost -U postgres -c "UPDATE users SET role = 'facility_admin' WHERE email = 'you@acme.inc'"
    ```
    Every later admin is promoted through the API.
 
@@ -71,31 +71,31 @@ Text fields are trimmed. Emails are stored lower-cased and matched case-insensit
 
 ### `POST /api/users` — create an account
 
-Public. Always creates an `employee`; a `role` in the body is ignored.
+Public. Always creates an `employee`; a `role` in the body is ignored. The email must be a company address ending in `@acme.inc` (case-insensitive).
 
 ```json
-{ "email": "ana@example.com", "password": "at least 8 chars", "name": "Ana" }
+{ "email": "ana@acme.inc", "password": "at least 8 chars", "name": "Ana" }
 ```
 
 `201` →
 ```json
-{ "id": 1, "email": "ana@example.com", "name": "Ana", "role": "employee",
+{ "id": 1, "email": "ana@acme.inc", "name": "Ana", "role": "employee",
   "createdAt": "2026-09-22T14:03:11.412Z", "updatedAt": "2026-09-22T14:03:11.412Z" }
 ```
 
-Errors: `400` invalid email, password under 8 characters or over 72 bytes, missing name · `409` email already registered.
+Errors: `400` invalid email, email not ending in `@acme.inc`, password under 8 characters or over 72 bytes, missing name · `409` email already registered.
 
 ### `POST /api/users/login` — log in
 
 Public.
 
 ```json
-{ "email": "ana@example.com", "password": "..." }
+{ "email": "ana@acme.inc", "password": "..." }
 ```
 
 `200` →
 ```json
-{ "user": { "id": 1, "email": "ana@example.com", "name": "Ana", "role": "employee", "...": "..." },
+{ "user": { "id": 1, "email": "ana@acme.inc", "name": "Ana", "role": "employee", "...": "..." },
   "token": "eyJhbGciOi..." }
 ```
 
@@ -143,7 +143,7 @@ Errors: `403` deleting your own account · `404` no such user · `409` the user 
   "status": "in_progress",
   "priority": 2,
   "location": { "id": 1, "building": "HQ", "floor": "3", "room": "Kitchen" },
-  "reportedBy": { "id": 4, "name": "Ana", "email": "ana@example.com" },
+  "reportedBy": { "id": 4, "name": "Ana", "email": "ana@acme.inc" },
   "assignedTo": { "id": 7, "name": "Bob", "email": "bob@example.com" },
   "createdAt": "2026-09-22T14:10:02.101Z",
   "updatedAt": "2026-09-22T15:42:37.880Z",
@@ -317,7 +317,7 @@ Call it when the user opens a ticket. Allowed for the reporter, the assignee, or
 
 ## Migrations — `/api/migrations`
 
-Creates or updates the database tables from `backend/migrations/schema.sql`. The script is idempotent, so calling it repeatedly is safe.
+Creates any missing database tables. The schema is the `SCHEMA` list at the top of `backend/migrations/function.py`. Every statement uses `IF NOT EXISTS`, so calling this repeatedly is safe.
 
 | Method | Does |
 | --- | --- |
@@ -338,9 +338,9 @@ curl -s -X POST $API/api/migrations
 
 # Sign up and log in
 curl -s -X POST $API/api/users -H 'Content-Type: application/json' \
-  -d '{"email":"ana@example.com","password":"hunter22!","name":"Ana"}'
+  -d '{"email":"ana@acme.inc","password":"hunter22!","name":"Ana"}'
 TOKEN=$(curl -s -X POST $API/api/users/login -H 'Content-Type: application/json' \
-  -d '{"email":"ana@example.com","password":"hunter22!"}' | jq -r .token)
+  -d '{"email":"ana@acme.inc","password":"hunter22!"}' | jq -r .token)
 
 # File a ticket
 curl -s -X POST $API/api/incidents -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
