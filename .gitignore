@@ -233,6 +233,27 @@ tmp
 # Compiled files
 *.js.map
 
+# Backend services: bin/start-dev.sh installs each service's dependencies into
+# the service folder itself (pip install --target) for Lambda hot reload, so
+# packages land beside the source (psycopg/, jwt/, *.dist-info/, .pip_installed).
+# Ignore everything in a service folder except its own source, so a new
+# dependency never needs adding here. Folders prefixed with _ are not services.
+backend/*/*
+!backend/_*/*
+!backend/*/*.py
+!backend/*/*.js
+!backend/*/*.sql
+!backend/*/*.md
+!backend/*/requirements.txt
+!backend/*/package.json
+!backend/*/pom.xml
+!backend/*/models/
+!backend/*/controllers/
+!backend/*/views/
+!backend/*/lib/
+!backend/*/tests/
+!backend/*/src/
+
 # OS-specific files
 .DS_Store
 Thumbs.db
