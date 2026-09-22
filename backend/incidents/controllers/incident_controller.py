@@ -169,15 +169,26 @@ def assign_incident(event, incident_id):
 
     assignee_id = validation.positive_id(body, "assigneeId", required=False)
 
-    if assignee_id is not None:
+    existing = incident_model.find_access_row(incident_id)
+    if existing is None:
+        raise HttpError(404, "Incident not found")
+    if existing["assigned_to"] == assignee_id:
+        raise HttpError(400, "Incident already has that assignment")
+
+    if assignee_id is None:
+        note = f"Ticket #{incident_id}: unassigned"
+    else:
         assignee = user_model.find_by_id(assignee_id)
         if assignee is None:
             raise HttpError(400, "'assigneeId' does not match a known user")
         # Employees cannot hold tickets; only engineers and admins work them.
         if assignee["role"] not in auth.STAFF_ROLES:
             raise HttpError(400, "Tickets can only be assigned to an engineer or admin")
+        note = f"Ticket #{incident_id}: assigned to {assignee['name']}"
 
-    row = incident_model.assign(incident_id, assignee_id)
+    # Recorded on the thread so the new assignee (and the reporter) see it in
+    # their inbox.
+    row = incident_model.assign_with_message(incident_id, assignee_id, caller["id"], note)
     if row is None:
         raise HttpError(404, "Incident not found")
 

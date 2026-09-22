@@ -5,7 +5,7 @@ Reads join users and locations so a ticket list renders without the frontend
 making follow-up requests per row.
 """
 
-from lib.database import execute, fetch_all, fetch_one
+from lib.database import execute, fetch_all, fetch_one, transaction
 
 STATUS_OPEN = "open"
 STATUS_IN_PROGRESS = "in_progress"
@@ -102,32 +102,21 @@ def list_unassigned():
         " ORDER BY i.priority ASC, i.created_at DESC"
     )
 
-def assign(incident_id, assignee_id):
-    """Set or clear the assigned engineer. Returns the row, or None."""
-    row = execute(
-        "UPDATE incidents SET assigned_to = %s WHERE id = %s RETURNING id",
-        (assignee_id, incident_id),
-        returning=True,
-    )
-    return find_by_id(row["id"]) if row else None
-
-def update_status_with_message(incident_id, status, author_id, message):
+def _update_with_message(incident_id, set_clause, value, author_id, message):
     """
-    Change an incident's status and post the note recording it.
+    Apply one column change and post the note recording it.
 
-    Both statements share one transaction: a status change must never be left
-    without its message, and a message must never describe a change that did
-    not commit.
+    Both statements share one transaction: a change must never be left without
+    its message, and a message must never describe a change that did not
+    commit. The note is what surfaces the change in other users' inboxes.
 
     Returns:
         dict | None: the updated incident, or None when it does not exist
     """
-    from lib.database import transaction
-
     with transaction() as cur:
         cur.execute(
-            "UPDATE incidents SET status = %s WHERE id = %s RETURNING id",
-            (status, incident_id),
+            f"UPDATE incidents SET {set_clause} = %s WHERE id = %s RETURNING id",
+            (value, incident_id),
         )
         if cur.fetchone() is None:
             return None
@@ -138,3 +127,11 @@ def update_status_with_message(incident_id, status, author_id, message):
         )
 
     return find_by_id(incident_id)
+
+def assign_with_message(incident_id, assignee_id, author_id, message):
+    """Set or clear the assigned engineer and record it on the thread."""
+    return _update_with_message(incident_id, "assigned_to", assignee_id, author_id, message)
+
+def update_status_with_message(incident_id, status, author_id, message):
+    """Change the status and record it on the thread."""
+    return _update_with_message(incident_id, "status", status, author_id, message)

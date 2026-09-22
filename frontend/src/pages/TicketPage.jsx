@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { incidents, messages, users } from '../services/api'
+import { inbox, incidents, messages, users } from '../services/api'
 import { STATUSES, formatDate, formatLocation, isAdmin, isStaff, label } from '../services/format'
 import Alert from '../components/Alert'
 
@@ -7,7 +7,7 @@ import Alert from '../components/Alert'
  * One ticket: details, assignment (admin), status (assigned engineer or
  * admin), and the message thread.
  */
-export default function TicketPage({ id, user, onBack, onApiError }) {
+export default function TicketPage({ id, user, onBack, onApiError, onCountChange }) {
   const [ticket, setTicket] = useState(null)
   const [thread, setThread] = useState([])
   const [error, setError] = useState('')
@@ -28,13 +28,17 @@ export default function TicketPage({ id, user, onBack, onApiError }) {
       setThread(m)
       setAssignee(t.assignedTo ? String(t.assignedTo.id) : '')
       setStatus(t.status)
+      // Seeing the thread is what "read" means; the response carries the
+      // caller's remaining unread total so the nav badge updates at once.
+      const read = await inbox.markRead(id)
+      onCountChange(read.unread)
     } catch (err) {
       setError(err.message)
       onApiError(err)
     } finally {
       setLoading(false)
     }
-  }, [id, onApiError])
+  }, [id, onApiError, onCountChange])
 
   useEffect(() => {
     load()

@@ -25,7 +25,7 @@ logger.setLevel(logging.INFO)
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 
 # Tables schema.sql is expected to create, in dependency order.
-EXPECTED_TABLES = ("users", "locations", "incidents", "messages")
+EXPECTED_TABLES = ("users", "locations", "incidents", "messages", "ticket_reads")
 
 # Arbitrary but fixed key identifying the schema lock. Two concurrent Lambda
 # invocations would otherwise race to create the same tables.

@@ -133,3 +133,10 @@ export const messages = {
   create: (incidentId, message) =>
     request('POST', '/messages', { body: { incidentId, message } }),
 }
+
+export const inbox = {
+  list: () => request('GET', '/inbox'),
+  count: () => request('GET', '/inbox/count'),
+  markRead: (incidentId) => request('PUT', `/inbox/${incidentId}/read`),
+  markAllRead: () => request('PUT', '/inbox/read-all'),
+}

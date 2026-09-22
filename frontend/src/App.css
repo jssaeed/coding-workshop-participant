@@ -159,3 +159,36 @@ tr.clickable:hover {
 .muted {
   opacity: 0.7;
 }
+
+.badge.count {
+  margin-left: 0.4em;
+  background: #d0021b;
+  border-color: #d0021b;
+  color: #fff;
+  font-weight: 600;
+}
+
+.inbox {
+  list-style: none;
+  padding: 0;
+}
+
+.inbox li {
+  padding: 0.75rem 0.5rem;
+  border-bottom: 1px solid #8884;
+}
+
+.inbox li:hover {
+  background: #8881;
+}
+
+.inbox .meta {
+  font-size: 0.85em;
+  opacity: 0.8;
+}
+
+.inbox .preview {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

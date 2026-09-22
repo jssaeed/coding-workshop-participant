@@ -1,11 +1,15 @@
-import { useCallback, useState } from 'react'
-import { clearSession, getStoredUser, getToken, saveSession } from './services/api'
+import { useCallback, useEffect, useState } from 'react'
+import { clearSession, getStoredUser, getToken, inbox, saveSession } from './services/api'
 import { isAdmin, label } from './services/format'
 import LoginPage from './pages/LoginPage'
 import TicketsPage from './pages/TicketsPage'
 import TicketPage from './pages/TicketPage'
 import UsersPage from './pages/UsersPage'
+import InboxPage from './pages/InboxPage'
 import './App.css'
+
+// How often the nav badge asks the server for the unread total.
+const INBOX_POLL_MS = 30_000
 
 /**
  * Holds the session and switches between pages. Navigation is plain state
@@ -18,6 +22,7 @@ function App() {
     return token && user ? { user, token } : null
   })
   const [route, setRoute] = useState({ page: 'tickets' })
+  const [unread, setUnread] = useState(0)
 
   function handleLogin(user, token) {
     saveSession(user, token)
@@ -28,6 +33,7 @@ function App() {
   const handleLogout = useCallback(() => {
     clearSession()
     setSession(null)
+    setUnread(0)
     setRoute({ page: 'tickets' })
   }, [])
 
@@ -40,9 +46,30 @@ function App() {
     [handleLogout],
   )
 
+  // Poll the unread count while signed in. Pages that learn the count as a
+  // side effect (opening a ticket, loading the inbox) update it directly.
+  useEffect(() => {
+    if (!session) return undefined
+    let cancelled = false
+    const refresh = () =>
+      inbox
+        .count()
+        .then((data) => {
+          if (!cancelled) setUnread(data.unread)
+        })
+        .catch(handleApiError)
+    refresh()
+    const timer = setInterval(refresh, INBOX_POLL_MS)
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+  }, [session, handleApiError])
+
   if (!session) return <LoginPage onLogin={handleLogin} />
 
   const { user } = session
+  const openTicket = (id) => setRoute({ page: 'ticket', id })
 
   return (
     <div className="app">
@@ -50,6 +77,9 @@ function App() {
         <div className="row">
           <button type="button" className="link" onClick={() => setRoute({ page: 'tickets' })}>
             Tickets
+          </button>
+          <button type="button" className="link" onClick={() => setRoute({ page: 'inbox' })}>
+            Inbox{unread > 0 && <span className="badge count">{unread}</span>}
           </button>
           {isAdmin(user) && (
             <button type="button" className="link" onClick={() => setRoute({ page: 'users' })}>
@@ -67,11 +97,10 @@ function App() {
 
       <main>
         {route.page === 'tickets' && (
-          <TicketsPage
-            user={user}
-            onOpen={(id) => setRoute({ page: 'ticket', id })}
-            onApiError={handleApiError}
-          />
+          <TicketsPage user={user} onOpen={openTicket} onApiError={handleApiError} />
+        )}
+        {route.page === 'inbox' && (
+          <InboxPage onOpen={openTicket} onCountChange={setUnread} onApiError={handleApiError} />
         )}
         {route.page === 'ticket' && (
           <TicketPage
@@ -80,6 +109,7 @@ function App() {
             user={user}
             onBack={() => setRoute({ page: 'tickets' })}
             onApiError={handleApiError}
+            onCountChange={setUnread}
           />
         )}
         {route.page === 'users' && isAdmin(user) && (

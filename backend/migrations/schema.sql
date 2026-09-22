@@ -143,3 +143,21 @@ DROP TRIGGER IF EXISTS messages_set_updated_at ON messages;
 CREATE TRIGGER messages_set_updated_at
     BEFORE UPDATE ON messages
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- ---------------------------------------------------------------------------
+-- ticket_reads: per-user "read up to here" watermark for each ticket's thread
+-- ---------------------------------------------------------------------------
+-- A message is unread for a user when it is newer than their watermark on
+-- that ticket (or they have no watermark yet). One row per user per ticket
+-- keeps this small regardless of how long threads get.
+
+CREATE TABLE IF NOT EXISTS ticket_reads (
+    user_id      BIGINT      NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    incident_id  BIGINT      NOT NULL REFERENCES incidents (id) ON DELETE CASCADE,
+    last_read_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (user_id, incident_id)
+);
+
+-- The inbox query starts from the user, so the primary key already serves it;
+-- this covers the cascade when an incident is deleted.
+CREATE INDEX IF NOT EXISTS ticket_reads_incident_id_idx ON ticket_reads (incident_id);

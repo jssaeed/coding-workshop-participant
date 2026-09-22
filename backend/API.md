@@ -1,6 +1,6 @@
 # Incident Tracker API
 
-Four Lambda services behind `/api/`: `users`, `incidents`, `messages`, and `migrations`. All requests and responses are JSON.
+Five Lambda services behind `/api/`: `users`, `incidents`, `messages`, `inbox`, and `migrations`. All requests and responses are JSON.
 
 | Environment | Base URL |
 | --- | --- |
@@ -208,9 +208,13 @@ Admin only.
 
 Send `"assigneeId": null` to unassign. The assignee must be an engineer or admin.
 
+Also posts a message on the ticket, from the caller, so the new assignee and the reporter see it in their inbox:
+
+> Ticket #12: assigned to Bob
+
 `200` → the ticket.
 
-Errors: `400` missing `assigneeId`, unknown user, or the user is an employee · `404` no such ticket.
+Errors: `400` missing `assigneeId`, unknown user, the user is an employee, or the ticket already has that assignment · `404` no such ticket.
 
 ### `PUT /api/incidents/{id}/status` — change status
 
@@ -245,7 +249,7 @@ Errors: `400` unknown status, or the ticket is already in that status · `403` a
 }
 ```
 
-Status changes appear in the thread as ordinary messages authored by whoever made the change.
+Status and assignment changes appear in the thread as ordinary messages authored by whoever made the change.
 
 ### `POST /api/messages` — post on a ticket
 
@@ -267,13 +271,57 @@ Reporter, assignee, or admin of that ticket.
 
 ---
 
+## Inbox — `/api/inbox`
+
+What the signed-in user has not seen yet. A message is **unread** when it is on a ticket you reported or are assigned to, someone else wrote it, and it is newer than the last time you opened that ticket. Status and assignment changes are recorded as messages, so they show up here too. Your own messages never count.
+
+The inbox is personal: there is no way to read or change anyone else's, and admins get no special view.
+
+### `GET /api/inbox` — tickets with unread activity
+
+`200` →
+```json
+{
+  "unread": 3,
+  "items": [
+    {
+      "incident": { "id": 12, "title": "Leaking pipe", "status": "in_progress", "priority": 2 },
+      "unreadCount": 2,
+      "latestMessage": {
+        "message": "Ticket #12: status changed to in progress",
+        "createdAt": "2026-09-22T15:42:37.880Z",
+        "author": { "id": 7, "name": "Bob" }
+      }
+    }
+  ]
+}
+```
+
+Sorted by most recent unread activity. `unread` is the total across all items.
+
+### `GET /api/inbox/count` — unread total only
+
+Cheap enough to poll for a badge. `200` → `{ "unread": 3 }`
+
+### `PUT /api/inbox/{incidentId}/read` — mark one ticket read
+
+Call it when the user opens a ticket. Allowed for the reporter, the assignee, or an admin; anyone else gets `404`.
+
+`200` → `{ "incidentId": 12, "lastReadAt": "...", "unread": 1 }` — `unread` is the caller's remaining total, so a badge can update without a second request.
+
+### `PUT /api/inbox/read-all` — mark everything read
+
+`200` → `{ "unread": 0 }`
+
+---
+
 ## Migrations — `/api/migrations`
 
 Creates or updates the database tables from `backend/migrations/schema.sql`. The script is idempotent, so calling it repeatedly is safe.
 
 | Method | Does |
 | --- | --- |
-| `POST` | Apply the schema. `200` → `{ "message": "Schema applied", "tables": ["users", "locations", "incidents", "messages"] }` |
+| `POST` | Apply the schema. `200` → `{ "message": "Schema applied", "tables": ["users", "locations", "incidents", "messages", "ticket_reads"] }` |
 | `GET` | Report which tables exist. `200` → `{ "tables": [...], "missing": [...] }` |
 
 This endpoint is currently unauthenticated. It only ever creates — nothing is dropped — but add a shared-secret check before exposing it outside the workshop.
