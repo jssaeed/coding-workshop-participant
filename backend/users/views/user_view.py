@@ -11,6 +11,7 @@ def serialize(row):
         "email": row["email"],
         "name": row["name"],
         "role": row["role"],
+        "branch": {"id": row["branch_id"], "name": row["branch_name"]},
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
     }

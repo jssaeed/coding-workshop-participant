@@ -1,11 +1,29 @@
 import { useEffect, useState } from 'react'
+import { Button, Popconfirm, Select, Space, Table, Tag, Typography } from 'antd'
+import { DeleteOutlined } from '@ant-design/icons'
 import { users } from '../services/api'
-import { ROLES, formatDate, label } from '../services/format'
+import { ROLES, ROLE_ORDER, formatDate, label } from '../services/format'
 import Alert from '../components/Alert'
+
+// The ways the directory can be ordered. Each one is a compare function
+// for Array.sort(): negative means a comes first, positive means b does.
+const SORT_OPTIONS = [
+  { value: 'name', label: 'Name (A–Z)', compare: (a, b) => a.name.localeCompare(b.name) },
+  {
+    value: 'role',
+    label: 'Role',
+    // Admins first, then engineers, then employees; by name within a role
+    compare: (a, b) => ROLE_ORDER[a.role] - ROLE_ORDER[b.role] || a.name.localeCompare(b.name),
+  },
+  { value: 'newest', label: 'Newest accounts first', compare: (a, b) => new Date(b.createdAt) - new Date(a.createdAt) },
+  { value: 'oldest', label: 'Oldest accounts first', compare: (a, b) => new Date(a.createdAt) - new Date(b.createdAt) },
+]
 
 // Admin only: every account, with a role dropdown and a delete button.
 export default function UsersPage({ user }) {
   const [list, setList] = useState([])
+  const [sortBy, setSortBy] = useState('name')
+  const [roleFilter, setRoleFilter] = useState('') // '' means every role
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
@@ -31,14 +49,13 @@ export default function UsersPage({ user }) {
     try {
       await users.updateRole(target.id, role)
       setSuccess(`${target.name} is now ${label(role)}.`)
-      setRefreshCount(refreshCount + 1)
     } catch (err) {
       setError(err.message)
     }
+    setRefreshCount(refreshCount + 1) // reload either way, so the dropdown shows the real role
   }
 
   async function deleteUser(target) {
-    if (!window.confirm(`Delete ${target.name} (${target.email})?`)) return
     setError('')
     setSuccess('')
     try {
@@ -50,54 +67,88 @@ export default function UsersPage({ user }) {
     }
   }
 
+  // Filter, then sort, into a new list; the original stays as the server sent it
+  const sortOption = SORT_OPTIONS.find((option) => option.value === sortBy)
+  const shownList = list
+    .filter((account) => roleFilter === '' || account.role === roleFilter)
+    .sort(sortOption.compare)
+
+  const columns = [
+    {
+      title: 'Name',
+      dataIndex: 'name',
+      render: (name, account) => (
+        <span>{name} {account.id === user.id && <Tag>you</Tag>}</span>
+      ),
+    },
+    { title: 'Email', dataIndex: 'email', responsive: ['md'] },
+    {
+      title: 'Role',
+      dataIndex: 'role',
+      render: (role, account) => (
+        // You cannot change your own role
+        <Select
+          value={role}
+          onChange={(value) => changeRole(account, value)}
+          disabled={account.id === user.id}
+          style={{ width: 160 }}
+          options={ROLES.map((r) => ({ value: r, label: label(r) }))}
+        />
+      ),
+    },
+    { title: 'Joined', dataIndex: 'createdAt', render: formatDate, responsive: ['lg'] },
+    {
+      title: '',
+      key: 'actions',
+      width: 60,
+      render: (_, account) => (
+        // You cannot delete your own account
+        <Popconfirm
+          title={`Delete ${account.name}?`}
+          description={account.email}
+          okText="Delete"
+          okButtonProps={{ danger: true }}
+          onConfirm={() => deleteUser(account)}
+          disabled={account.id === user.id}
+        >
+          <Button danger type="text" icon={<DeleteOutlined />} disabled={account.id === user.id} />
+        </Popconfirm>
+      ),
+    },
+  ]
+
   return (
     <div>
-      <h1>Users</h1>
+      <div className="page-title">
+        <Typography.Title level={2} style={{ margin: 0 }}>
+          Employee directory
+          {user.branch && <span className="muted" style={{ fontSize: 16, fontWeight: 400 }}> · {user.branch.name}</span>}
+        </Typography.Title>
+        <Space wrap>
+          <Select
+            value={roleFilter}
+            onChange={setRoleFilter}
+            style={{ width: 160 }}
+            options={[{ value: '', label: 'All roles' }, ...ROLES.map((r) => ({ value: r, label: label(r) }))]}
+          />
+          <span className="muted">Sort by</span>
+          <Select
+            value={sortBy}
+            onChange={setSortBy}
+            style={{ width: 200 }}
+            options={SORT_OPTIONS.map(({ value, label: text }) => ({ value, label: text }))}
+          />
+        </Space>
+      </div>
       <Alert error={error} success={success} />
-
-      {loading && <p>Loading…</p>}
-      {!loading && (
-        <table>
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Email</th>
-              <th>Role</th>
-              <th>Joined</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {list.map((account) => {
-              // You cannot change or delete your own account
-              const isMe = account.id === user.id
-              return (
-                <tr key={account.id}>
-                  <td>{account.name}{isMe && ' (you)'}</td>
-                  <td>{account.email}</td>
-                  <td>
-                    <select
-                      value={account.role}
-                      onChange={(e) => changeRole(account, e.target.value)}
-                      disabled={isMe}
-                    >
-                      {ROLES.map((role) => (
-                        <option key={role} value={role}>{label(role)}</option>
-                      ))}
-                    </select>
-                  </td>
-                  <td>{formatDate(account.createdAt)}</td>
-                  <td>
-                    <button type="button" onClick={() => deleteUser(account)} disabled={isMe}>
-                      Delete
-                    </button>
-                  </td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
-      )}
+      <Table
+        rowKey="id"
+        columns={columns}
+        dataSource={shownList}
+        loading={loading}
+        pagination={false}
+        locale={{ emptyText: roleFilter ? `${label(roleFilter)}: no accounts.` : 'No accounts.' }}
+      />
     </div>
   )
 }

@@ -39,6 +39,12 @@ def route(event):
             return user_controller.list_users(event)
         return method_not_allowed(method)
 
+    # /api/users/branches (public: the signup form needs it before login)
+    if segments == ["branches"]:
+        if method == "GET":
+            return user_controller.list_branches(event)
+        return method_not_allowed(method)
+
     # /api/users/login
     if segments == ["login"]:
         if method == "POST":

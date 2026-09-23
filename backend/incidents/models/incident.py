@@ -2,12 +2,15 @@
 Incident model: the SQL for the incidents table.
 
 Reads join the users and locations tables so each ticket comes back with the
-reporter's name, the assignee's name and the location in one query.
+reporter's name, the assignee's name and the location in one query. The user
+joins are LEFT JOINs because a reporter or assignee may have been deleted.
 """
 
 from lib.database import execute, execute_many, fetch_all, fetch_one
 
-STATUSES = ["open", "in_progress", "blocked", "resolved", "closed"]
+# In the order a ticket normally moves through them. "assigned" is set
+# automatically when an engineer is put on an open ticket.
+STATUSES = ["open", "assigned", "in_progress", "blocked", "resolved", "closed"]
 # Statuses that mean the work is finished; resolved_at is set when a ticket
 # enters one of these and cleared when it leaves.
 FINISHED_STATUSES = ["resolved", "closed"]
@@ -21,12 +24,14 @@ SELECT_INCIDENT = """
     SELECT i.id, i.title, i.description, i.status, i.priority,
            i.created_at, i.updated_at, i.resolved_at,
            i.location_id, l.floor, l.room, b.id AS building_id, b.name AS building_name,
+           b.room_numbers_include_floor,
+           (SELECT MAX(rooms) FROM building_floors f WHERE f.building_id = b.id) AS max_rooms,
            i.reported_by, reporter.name AS reporter_name, reporter.email AS reporter_email,
            i.assigned_to, assignee.name AS assignee_name, assignee.email AS assignee_email
     FROM incidents i
     LEFT JOIN locations l ON l.id = i.location_id
     LEFT JOIN buildings b ON b.id = l.building_id
-    JOIN users reporter ON reporter.id = i.reported_by
+    LEFT JOIN users reporter ON reporter.id = i.reported_by
     LEFT JOIN users assignee ON assignee.id = i.assigned_to
 """
 
@@ -49,21 +54,25 @@ def find_by_id(incident_id):
     return fetch_one(SELECT_INCIDENT + " WHERE i.id = %s", (incident_id,))
 
 
-def find_basic(incident_id):
+def find_basic(incident_id, lock=False):
     """
     Return just the plain columns (id, status, priority, location_id,
     reported_by, assigned_to), or None.
 
     Enough to decide who may see or change the ticket, without the joins.
+
+    lock=True adds FOR UPDATE: the row stays locked until the current
+    transaction ends, so two people changing the same ticket at once are
+    handled one after the other, and the second sees the first's change.
     """
-    return fetch_one(
-        """
+    sql = """
         SELECT id, status, priority, location_id, reported_by, assigned_to
         FROM incidents
         WHERE id = %s
-        """,
-        (incident_id,),
-    )
+    """
+    if lock:
+        sql += " FOR UPDATE"
+    return fetch_one(sql, (incident_id,))
 
 
 def search(reported_by=None, assigned_to=None, status=None, priority=None):
@@ -107,15 +116,16 @@ def list_unassigned():
     )
 
 
-def assign(incident_id, assignee_id, author_id, note):
+def assign(incident_id, assignee_id, status, author_id, note):
     """
-    Set (or clear, with None) the assigned engineer, and add a message
-    saying so. Both are saved together or not at all.
+    Set (or clear, with None) the assigned engineer, set the status the
+    controller worked out ("assigned" / back to "open" / unchanged), and add
+    a message saying so. All saved together or not at all.
     """
     execute_many([
         (
-            "UPDATE incidents SET assigned_to = %s, updated_at = NOW() WHERE id = %s",
-            (assignee_id, incident_id),
+            "UPDATE incidents SET assigned_to = %s, status = %s, updated_at = NOW() WHERE id = %s",
+            (assignee_id, status, incident_id),
         ),
         (
             "INSERT INTO messages (incident_id, user_id, message) VALUES (%s, %s, %s)",

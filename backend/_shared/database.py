@@ -8,9 +8,14 @@ psycopg directly; they call the small functions at the bottom of this file.
 Important psycopg rule: nothing is saved until you call commit(). Every helper
 below finishes its own transaction (commit for writes, rollback for reads) so
 a request never leaves one half-open.
+
+When several steps must save together, wrap them in "with transaction():".
+Inside that block the helpers stop committing on their own; the whole block
+is committed at the end, or rolled back if anything in it raises.
 """
 
 import os
+from contextlib import contextmanager
 
 from psycopg import connect
 from psycopg.rows import dict_row
@@ -33,6 +38,10 @@ CONNECTION_STRING = (
 # The one connection this container reuses. None until first needed.
 _connection = None
 
+# True while inside a "with transaction():" block. A Lambda container handles
+# one request at a time, so a single flag is enough.
+_in_transaction = False
+
 
 def get_connection():
     """Return the open connection, connecting first if needed."""
@@ -44,6 +53,56 @@ def get_connection():
     return _connection
 
 
+@contextmanager
+def transaction():
+    """
+    Run everything inside the "with" block as one transaction.
+
+        with transaction():
+            refresh_token_model.revoke(old_id)
+            refresh_token_model.create(...)
+
+    Both saves happen, or neither does. A block inside another block simply
+    joins the outer one.
+    """
+    global _in_transaction
+    if _in_transaction:
+        yield  # already in a transaction: the outer block will commit
+        return
+
+    connection = get_connection()
+    _in_transaction = True
+    try:
+        yield
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        _in_transaction = False
+
+
+def finish_read(connection):
+    """After a SELECT: close the transaction it opened, unless we are inside
+    a transaction() block, which will end it later."""
+    if not _in_transaction:
+        connection.rollback()
+
+
+def finish_write(connection):
+    """After a write: save it, unless we are inside a transaction() block,
+    which will save everything at the end."""
+    if not _in_transaction:
+        connection.commit()
+
+
+def undo(connection):
+    """After an error: throw the transaction away. Inside a transaction()
+    block the block does this itself, once, for all the steps."""
+    if not _in_transaction:
+        connection.rollback()
+
+
 def fetch_all(sql, params=None):
     """Run a SELECT and return all rows as a list of dicts."""
     connection = get_connection()
@@ -51,10 +110,10 @@ def fetch_all(sql, params=None):
         with connection.cursor() as cursor:
             cursor.execute(sql, params)
             rows = cursor.fetchall()
-        connection.rollback()  # reads still open a transaction; close it
+        finish_read(connection)
         return rows
     except Exception:
-        connection.rollback()
+        undo(connection)
         raise
 
 
@@ -65,10 +124,10 @@ def fetch_one(sql, params=None):
         with connection.cursor() as cursor:
             cursor.execute(sql, params)
             row = cursor.fetchone()
-        connection.rollback()
+        finish_read(connection)
         return row
     except Exception:
-        connection.rollback()
+        undo(connection)
         raise
 
 
@@ -87,10 +146,10 @@ def execute(sql, params=None):
                 result = cursor.fetchone()
             else:
                 result = cursor.rowcount
-        connection.commit()
+        finish_write(connection)
         return result
     except Exception:
-        connection.rollback()
+        undo(connection)
         raise
 
 
@@ -107,7 +166,7 @@ def execute_many(statements):
         with connection.cursor() as cursor:
             for sql, params in statements:
                 cursor.execute(sql, params)
-        connection.commit()
+        finish_write(connection)
     except Exception:
-        connection.rollback()
+        undo(connection)
         raise

@@ -15,11 +15,13 @@ User controller: the rules for accounts.
 import logging
 
 from lib import auth, validation
+from lib.database import transaction
 from lib.request import json_body, query_params
 from lib.responses import HttpError, created, no_content, ok
+from models import branch as branch_model
 from models import refresh_token as refresh_token_model
 from models import user as user_model
-from views import user_view
+from views import branch_view, user_view
 
 logger = logging.getLogger()
 
@@ -28,12 +30,20 @@ logger = logging.getLogger()
 COMPANY_EMAIL_DOMAIN = "@acme.inc"
 
 
+def list_branches(event):
+    """GET /api/users/branches - the sites a new account can pick from. Public."""
+    return ok(branch_view.serialize_many(branch_model.list_all()))
+
+
 def create_account(event):
-    """POST /api/users - sign up. Always creates an employee."""
+    """POST /api/users - sign up. Always creates an employee, at the chosen branch."""
     body = json_body(event)
     email = validation.email(body)
     password = validation.password(body)
     name = validation.required_string(body, "name", max_length=255)
+    branch_id = validation.required_id(body, "branchId")
+    if branch_model.find_by_id(branch_id) is None:
+        raise HttpError(400, "'branchId' does not match a known branch")
 
     # Business rule: accounts are for company staff only.
     if not email.endswith(COMPANY_EMAIL_DOMAIN):
@@ -49,6 +59,7 @@ def create_account(event):
         password_hash=auth.hash_password(password),
         name=name,
         role=auth.ROLE_EMPLOYEE,
+        branch_id=branch_id,
     )
     logger.info("Created account %s", user["id"])
     return created(user_view.serialize(user))
@@ -69,11 +80,13 @@ def login(event):
     if user is None or not auth.check_password(password, user["password_hash"]):
         raise HttpError(401, "Email or password is incorrect")
 
-    # Housekeeping: each login clears out refresh tokens that are expired or
-    # revoked. Cheap, and it means the table never needs a separate cleanup job.
-    refresh_token_model.delete_stale()
+    with transaction():
+        # Housekeeping: each login clears out refresh tokens that are expired
+        # or revoked. Cheap, so the table never needs a separate cleanup job.
+        refresh_token_model.delete_stale()
+        result = issue_tokens(user)
 
-    return ok(issue_tokens(user))
+    return ok(result)
 
 
 def issue_tokens(user):
@@ -82,6 +95,7 @@ def issue_tokens(user):
     new refresh token. The refresh token's hash is saved so it can be
     checked and revoked later.
     """
+    user = user_model.find_by_id(user["id"])  # the full row, with the branch
     refresh_token, token_hash, expires_at = auth.create_refresh_token()
     refresh_token_model.create(user["id"], token_hash, expires_at)
     return {
@@ -108,8 +122,13 @@ def refresh(event):
     if row is None:
         raise HttpError(401, "Refresh token is invalid or expired")
 
-    refresh_token_model.revoke(row["token_id"])
-    return ok(issue_tokens(row))
+    # Revoke and re-issue together: a failure half-way must not leave the
+    # user with no refresh token at all, or with two valid ones.
+    with transaction():
+        refresh_token_model.revoke(row["token_id"])
+        result = issue_tokens(row)
+
+    return ok(result)
 
 
 def logout(event):
@@ -130,8 +149,23 @@ def me(event):
     return ok(user_view.serialize(user))
 
 
+def get_user_in_my_branch(caller, user_id):
+    """
+    Load a user an admin wants to manage, or raise.
+
+    404 if there is no such user. 403 if they belong to another branch: a
+    facility admin only manages the people at their own site.
+    """
+    user = user_model.find_by_id(user_id)
+    if user is None:
+        raise HttpError(404, "User not found")
+    if user["branch_id"] != caller["branch_id"]:
+        raise HttpError(403, "That user belongs to another branch")
+    return user
+
+
 def list_users(event):
-    """GET /api/users?role=engineer - all accounts. Admin only."""
+    """GET /api/users?role=engineer - the accounts at the caller's branch. Admin only."""
     caller = auth.current_user(event)
     auth.require_role(caller, [auth.ROLE_ADMIN])
 
@@ -139,7 +173,7 @@ def list_users(event):
     if role is not None and role not in auth.ALL_ROLES:
         raise HttpError(400, f"'role' must be one of: {', '.join(auth.ALL_ROLES)}")
 
-    users = user_model.list_all(role)
+    users = user_model.list_all(caller["branch_id"], role)
     return ok(user_view.serialize_many(users))
 
 
@@ -154,17 +188,17 @@ def update_role(event, user_id):
     if user_id == caller["id"]:
         raise HttpError(403, "You cannot change your own role")
 
-    before = user_model.find_by_id(user_id)
-    if before is None:
-        raise HttpError(404, "User not found")
-
-    user = user_model.update_role(user_id, role)
+    before = get_user_in_my_branch(caller, user_id)
 
     # Taking power away must also end the user's sessions: their current
     # access token dies within minutes and cannot be renewed. A promotion
     # keeps their sessions; the new role applies on their next request.
-    if auth.is_demotion(before["role"], role):
-        refresh_token_model.revoke_all_for_user(user_id)
+    # The role change and the revoke are one transaction, so a demoted user
+    # can never be left with a working refresh token.
+    with transaction():
+        user = user_model.update_role(user_id, role)
+        if auth.is_demotion(before["role"], role):
+            refresh_token_model.revoke_all_for_user(user_id)
 
     logger.info("User %s role changed to %s by %s", user_id, role, caller["id"])
     return ok(user_view.serialize(user))
@@ -178,13 +212,10 @@ def delete_user(event, user_id):
     if user_id == caller["id"]:
         raise HttpError(403, "You cannot delete your own account")
 
-    try:
-        deleted = user_model.delete(user_id)
-    except user_model.UserInUse:
-        raise HttpError(409, "User has incidents or messages and cannot be deleted")
+    get_user_in_my_branch(caller, user_id)
 
-    if deleted == 0:
-        raise HttpError(404, "User not found")
+    # Their tickets and messages are kept and shown as "Deleted user".
+    user_model.delete(user_id)
 
     logger.info("User %s deleted by %s", user_id, caller["id"])
     return no_content()

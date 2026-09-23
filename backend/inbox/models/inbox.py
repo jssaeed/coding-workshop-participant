@@ -26,10 +26,12 @@ def unread_messages(user_id):
                i.title, i.status, i.priority
         FROM messages m
         JOIN incidents i ON i.id = m.incident_id
-        JOIN users u ON u.id = m.user_id
+        LEFT JOIN users u ON u.id = m.user_id
         LEFT JOIN ticket_reads r ON r.incident_id = i.id AND r.user_id = %(user_id)s
         WHERE (i.reported_by = %(user_id)s OR i.assigned_to = %(user_id)s)
-          AND m.user_id <> %(user_id)s
+          -- not my own messages. IS DISTINCT FROM (not <>) so messages whose
+          -- author was deleted (user_id NULL) still count as unread.
+          AND m.user_id IS DISTINCT FROM %(user_id)s
           AND (r.last_read_at IS NULL OR m.created_at > r.last_read_at)
         ORDER BY m.created_at DESC, m.id DESC
         """,

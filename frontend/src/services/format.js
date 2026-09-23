@@ -2,12 +2,58 @@
  * Small helpers for showing data on the page.
  */
 
-export const STATUSES = ['open', 'in_progress', 'blocked', 'resolved', 'closed']
+export const STATUSES = ['open', 'assigned', 'in_progress', 'blocked', 'resolved', 'closed']
 export const ROLES = ['employee', 'engineer', 'facility_admin']
 
-// "in_progress" -> "in progress", "facility_admin" -> "facility admin"
+// Most senior first, for sorting the employee directory by role
+export const ROLE_ORDER = { facility_admin: 0, engineer: 1, employee: 2 }
+export const PRIORITIES = [1, 2, 3, 4, 5]
+
+// Chart colours for each status, one hue per status so a status always has
+// the same colour wherever it is drawn. Checked for colour-blind safety.
+export const STATUS_CHART_COLORS = {
+  open: '#2a78d6',
+  assigned: '#1baf7a',
+  in_progress: '#eda100',
+  blocked: '#e34948',
+  resolved: '#008300',
+  closed: '#4a3aa7',
+}
+
+// Ant Design tag colours for each status and priority
+export const STATUS_COLORS = {
+  open: 'blue',
+  assigned: 'cyan',
+  in_progress: 'orange',
+  blocked: 'red',
+  resolved: 'green',
+  closed: 'default',
+}
+
+export const PRIORITY_COLORS = {
+  1: 'red',
+  2: 'volcano',
+  3: 'gold',
+  4: 'blue',
+  5: 'default',
+}
+
+// "in_progress" -> "In progress", "facility_admin" -> "Facility admin"
 export function label(value) {
-  return value ? value.replaceAll('_', ' ') : ''
+  if (!value) return ''
+  const words = value.replaceAll('_', ' ')
+  return words.charAt(0).toUpperCase() + words.slice(1)
+}
+
+// "Ana Lopez" -> "A", used for the avatar in the header
+export function initial(name) {
+  return name ? name.trim().charAt(0).toUpperCase() : '?'
+}
+
+// The reporter or author of something. null means the account was deleted
+// after they wrote it, so the ticket or message is kept but has no owner.
+export function personName(person) {
+  return person ? person.name : 'Deleted user'
 }
 
 export function formatDate(isoString) {
@@ -15,14 +61,45 @@ export function formatDate(isoString) {
   return new Date(isoString).toLocaleString()
 }
 
+// Floors are numbered 1..n above ground and -1..-m below ground.
+// -1 is shown as "B1", -2 as "B2", and so on.
+export function floorLabel(floor) {
+  return floor < 0 ? `B${-floor}` : String(floor)
+}
+
 export function formatLocation(location) {
   if (!location) return '—'
-  let text = `${location.building.name}, floor ${location.floor}`
-  if (location.room) text += `, room ${location.room}`
+  let text = `${location.building.name}, floor ${floorLabel(location.floor)}`
+  // roomLabel is how the building writes the room ("512" or "12")
+  if (location.room) text += `, room ${location.roomLabel || location.room}`
   return text
 }
 
-// [1, 2, ..., n] for the floor dropdown
+// How a building writes room number `room` on `floor`. Buildings that
+// "number rooms by floor" show room 1 on floor 5 as "501", or "5001" once
+// any floor has 100 or more rooms. Otherwise it is just "1".
+export function roomLabel(building, floor, room) {
+  if (!building || !building.roomNumbersIncludeFloor) return String(room)
+  const maxRooms = Math.max(0, ...building.rooms.map((f) => f.rooms))
+  const digits = maxRooms < 100 ? 2 : 3
+  return `${floorLabel(floor)}${String(room).padStart(digits, '0')}`
+}
+
+// The floor dropdown options for a building, in the order the server sends
+// them: top floor down to 1, then B1, B2, ...
+export function floorOptions(building) {
+  if (!building) return []
+  return building.rooms.map((f) => ({ value: f.floor, label: floorLabel(f.floor) }))
+}
+
+// How many rooms a floor has, or 0 when the admin did not say
+export function roomsOnFloor(building, floor) {
+  if (!building) return 0
+  const entry = building.rooms.find((f) => f.floor === floor)
+  return entry ? entry.rooms : 0
+}
+
+// [1, 2, ..., n]
 export function range(n) {
   const numbers = []
   for (let i = 1; i <= n; i++) numbers.push(i)

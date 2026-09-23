@@ -1,15 +1,22 @@
 import { useEffect, useState } from 'react'
+import { Layout } from 'antd'
 import { clearSession, getStoredUser, getToken, inbox, saveSession, users } from './services/api'
-import { isAdmin, label } from './services/format'
+import { isAdmin } from './services/format'
+import AppHeader from './components/AppHeader'
+import AppFooter from './components/AppFooter'
 import LoginPage from './pages/LoginPage'
+import HomePage from './pages/HomePage'
 import TicketsPage from './pages/TicketsPage'
 import TicketPage from './pages/TicketPage'
 import InboxPage from './pages/InboxPage'
 import UsersPage from './pages/UsersPage'
 import BuildingsPage from './pages/BuildingsPage'
+import StatsPage from './pages/StatsPage'
 import './App.css'
 
-// How often to ask the server for the unread count (for the Inbox badge)
+const { Content } = Layout
+
+// How often to ask the server for the unread count (for the inbox bell)
 // and for the signed-in user's current role (so a promotion shows up
 // without signing out and back in).
 const POLL_EVERY_MS = 30000
@@ -19,16 +26,16 @@ function App() {
   const [user, setUser] = useState(getToken() ? getStoredUser() : null)
 
   // Which page is showing. For the ticket page, ticketId says which ticket.
-  const [page, setPage] = useState('tickets')
+  const [page, setPage] = useState('home')
   const [ticketId, setTicketId] = useState(null)
 
-  // Number shown on the Inbox badge
+  // Number shown on the inbox bell
   const [unread, setUnread] = useState(0)
 
   function handleLogin(loggedInUser, token, refreshToken) {
     saveSession(loggedInUser, token, refreshToken)
     setUser(loggedInUser)
-    setPage('tickets')
+    setPage('home')
   }
 
   function handleLogout() {
@@ -38,7 +45,7 @@ function App() {
     clearSession()
     setUser(null)
     setUnread(0)
-    setPage('tickets')
+    setPage('home')
   }
 
   function openTicket(id) {
@@ -67,41 +74,17 @@ function App() {
     return () => clearInterval(timer) // stop polling on sign out
   }, [user])
 
-  if (!user) {
-    return <LoginPage onLogin={handleLogin} />
-  }
+  // The page currently showing. Admin pages fall back to home for other roles.
+  function renderPage() {
+    if (!user) return <LoginPage onLogin={handleLogin} />
 
-  return (
-    <div className="app">
-      <nav className="row space-between">
-        <div className="row">
-          <button type="button" className="link" onClick={() => setPage('tickets')}>
-            Tickets
-          </button>
-          <button type="button" className="link" onClick={() => setPage('inbox')}>
-            Inbox{unread > 0 && <span className="badge count">{unread}</span>}
-          </button>
-          {isAdmin(user) && (
-            <button type="button" className="link" onClick={() => setPage('users')}>
-              Users
-            </button>
-          )}
-          {isAdmin(user) && (
-            <button type="button" className="link" onClick={() => setPage('buildings')}>
-              Buildings
-            </button>
-          )}
-        </div>
-        <div className="row">
-          <span className="muted">{user.name} ({label(user.role)})</span>
-          <button type="button" onClick={handleLogout}>Sign out</button>
-        </div>
-      </nav>
-
-      <main>
-        {page === 'tickets' && <TicketsPage user={user} onOpen={openTicket} />}
-        {page === 'inbox' && <InboxPage onOpen={openTicket} setUnread={setUnread} />}
-        {page === 'ticket' && (
+    switch (page) {
+      case 'tickets':
+        return <TicketsPage user={user} onOpen={openTicket} />
+      case 'inbox':
+        return <InboxPage onOpen={openTicket} setUnread={setUnread} />
+      case 'ticket':
+        return (
           <TicketPage
             key={ticketId}
             id={ticketId}
@@ -109,11 +92,32 @@ function App() {
             onBack={() => setPage('tickets')}
             setUnread={setUnread}
           />
-        )}
-        {page === 'users' && isAdmin(user) && <UsersPage user={user} />}
-        {page === 'buildings' && isAdmin(user) && <BuildingsPage />}
-      </main>
-    </div>
+        )
+      case 'stats':
+        return isAdmin(user) ? <StatsPage /> : <HomePage user={user} onNavigate={setPage} />
+      case 'users':
+        return isAdmin(user) ? <UsersPage user={user} /> : <HomePage user={user} onNavigate={setPage} />
+      case 'buildings':
+        return isAdmin(user) ? <BuildingsPage user={user} /> : <HomePage user={user} onNavigate={setPage} />
+      default:
+        return <HomePage user={user} onNavigate={setPage} />
+    }
+  }
+
+  return (
+    <Layout className="app">
+      <AppHeader
+        user={user}
+        page={page}
+        unread={unread}
+        onNavigate={setPage}
+        onLogout={handleLogout}
+      />
+      <Content className="content">
+        <div className="content-inner">{renderPage()}</div>
+      </Content>
+      <AppFooter />
+    </Layout>
   )
 }
 

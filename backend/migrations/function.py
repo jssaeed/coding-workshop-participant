@@ -47,9 +47,25 @@ logger.setLevel(logging.INFO)
 #   SET NULL   keep the pointing rows but clear the reference
 
 SCHEMA = [
+    # --- branches --------------------------------------------------------
+    # The company sites. Every user belongs to exactly one, and a facility
+    # admin can only manage the accounts at their own branch.
+    """
+    CREATE TABLE IF NOT EXISTS branches (
+        id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        name       TEXT        NOT NULL UNIQUE CHECK (name <> ''),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    # The branches ACME has today. ON CONFLICT DO NOTHING makes this safe to
+    # run every time: an existing branch is simply left alone.
+    "INSERT INTO branches (name) VALUES ('Princeton-Plainsboro') ON CONFLICT (name) DO NOTHING",
+    "INSERT INTO branches (name) VALUES ('Miami') ON CONFLICT (name) DO NOTHING",
+
     # --- users -----------------------------------------------------------
     # Emails are stored in lower case (the users service does this), so a
     # plain UNIQUE rule is enough to stop the same address signing up twice.
+    # ON DELETE RESTRICT: a branch cannot be removed while it has people.
     """
     CREATE TABLE IF NOT EXISTS users (
         id            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -58,22 +74,77 @@ SCHEMA = [
         name          TEXT        NOT NULL CHECK (name <> ''),
         role          TEXT        NOT NULL DEFAULT 'employee'
                                   CHECK (role IN ('facility_admin', 'engineer', 'employee')),
+        branch_id     BIGINT      NOT NULL REFERENCES branches (id) ON DELETE RESTRICT,
         created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
     """,
 
     # --- buildings -------------------------------------------------------
-    # Defined by a facility admin: a name and how many floors it has. The
-    # ticket form offers these as a dropdown, and floors 1..floors as another.
+    # Defined by a facility admin for their own branch: a name, how many
+    # floors above ground (1..floors) and how many below (B1..Bm). The
+    # ticket form offers a branch's buildings as a dropdown.
     """
     CREATE TABLE IF NOT EXISTS buildings (
-        id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-        name       TEXT        NOT NULL UNIQUE CHECK (name <> ''),
-        floors     SMALLINT    NOT NULL CHECK (floors BETWEEN 1 AND 200),
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        id              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        branch_id       BIGINT      NOT NULL REFERENCES branches (id) ON DELETE RESTRICT,
+        name            TEXT        NOT NULL CHECK (name <> ''),
+        floors          SMALLINT    NOT NULL CHECK (floors BETWEEN 1 AND 200),
+        basement_floors SMALLINT    NOT NULL DEFAULT 0 CHECK (basement_floors BETWEEN 0 AND 20),
+        -- true: room 1 on floor 5 is shown as "501" (or "5001" past 99 rooms)
+        room_numbers_include_floor BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
+    """,
+    # Upgrades for a buildings table made before branches and basements.
+    # Every line is safe to re-run: "IF NOT EXISTS" and "IF EXISTS" make the
+    # ALTERs no-ops the second time, and the UPDATE only touches NULLs.
+    # Buildings that existed before branches belong to Princeton-Plainsboro.
+    "ALTER TABLE buildings ADD COLUMN IF NOT EXISTS branch_id BIGINT REFERENCES branches (id) ON DELETE RESTRICT",
+    """
+    UPDATE buildings
+    SET branch_id = (SELECT id FROM branches WHERE name = 'Princeton-Plainsboro')
+    WHERE branch_id IS NULL
+    """,
+    "ALTER TABLE buildings ALTER COLUMN branch_id SET NOT NULL",
+    """
+    ALTER TABLE buildings
+    ADD COLUMN IF NOT EXISTS basement_floors SMALLINT NOT NULL DEFAULT 0
+        CHECK (basement_floors BETWEEN 0 AND 20)
+    """,
+    "ALTER TABLE buildings ADD COLUMN IF NOT EXISTS room_numbers_include_floor BOOLEAN NOT NULL DEFAULT FALSE",
+    # Names used to be unique across the company; now they are unique per
+    # branch (ignoring case), so Miami can have its own "HQ".
+    "ALTER TABLE buildings DROP CONSTRAINT IF EXISTS buildings_name_key",
+    "CREATE UNIQUE INDEX IF NOT EXISTS buildings_branch_name_idx ON buildings (branch_id, LOWER(name))",
+
+    # --- building_floors -------------------------------------------------
+    # One row per floor of a building, saying how many rooms it has (0 =
+    # not specified, so the ticket form takes any room number). Floors are
+    # numbered 1..floors above ground and -1..-basement_floors below
+    # (the app shows -1 as "B1"). Deleting a building deletes its floors.
+    """
+    CREATE TABLE IF NOT EXISTS building_floors (
+        building_id BIGINT   NOT NULL REFERENCES buildings (id) ON DELETE CASCADE,
+        floor       SMALLINT NOT NULL CHECK (floor <> 0),
+        rooms       SMALLINT NOT NULL DEFAULT 0 CHECK (rooms BETWEEN 0 AND 500),
+        PRIMARY KEY (building_id, floor)
+    )
+    """,
+    # Buildings made before this table existed get a row per floor, with
+    # rooms unspecified. ON CONFLICT DO NOTHING keeps existing rows as is.
+    """
+    INSERT INTO building_floors (building_id, floor, rooms)
+    SELECT b.id, f, 0
+    FROM buildings b, generate_series(1, b.floors) AS f
+    ON CONFLICT DO NOTHING
+    """,
+    """
+    INSERT INTO building_floors (building_id, floor, rooms)
+    SELECT b.id, f, 0
+    FROM buildings b, generate_series(-b.basement_floors, -1) AS f
+    ON CONFLICT DO NOTHING
     """,
 
     # --- locations -------------------------------------------------------
@@ -82,13 +153,15 @@ SCHEMA = [
     # every ticket reported there.
     # "UNIQUE NULLS NOT DISTINCT" makes two rows with room = NULL count as
     # the same place (plain UNIQUE would treat every NULL as different).
-    # The floor number is checked against the building's floor count in the
-    # incidents service, because a CHECK cannot look at another table.
+    # The floor number is checked against the building's floors in the
+    # incidents service, because a CHECK cannot look at another table. Here
+    # it only has to be non-zero: positive above ground, negative for
+    # basements (-1 is "B1").
     """
     CREATE TABLE IF NOT EXISTS locations (
         id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
         building_id BIGINT      NOT NULL REFERENCES buildings (id) ON DELETE RESTRICT,
-        floor       SMALLINT    NOT NULL CHECK (floor >= 1),
+        floor       SMALLINT    NOT NULL CHECK (floor <> 0),
         room        INTEGER     CHECK (room >= 1),
         created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         UNIQUE NULLS NOT DISTINCT (building_id, floor, room)
@@ -99,16 +172,18 @@ SCHEMA = [
     # --- incidents -------------------------------------------------------
     # A ticket. reported_by is who filed it, assigned_to is the engineer
     # working on it (NULL until an admin assigns someone).
+    # Both point at users with ON DELETE SET NULL: when an account is
+    # deleted its tickets stay, and the API shows "Deleted user" instead.
     """
     CREATE TABLE IF NOT EXISTS incidents (
         id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
         title       TEXT        NOT NULL CHECK (title <> ''),
         description TEXT        NOT NULL DEFAULT '',
         status      TEXT        NOT NULL DEFAULT 'open'
-                                CHECK (status IN ('open', 'in_progress', 'blocked', 'resolved', 'closed')),
+                                CHECK (status IN ('open', 'assigned', 'in_progress', 'blocked', 'resolved', 'closed')),
         priority    SMALLINT    NOT NULL DEFAULT 3 CHECK (priority BETWEEN 1 AND 5),
         location_id BIGINT      REFERENCES locations (id) ON DELETE RESTRICT,
-        reported_by BIGINT      NOT NULL REFERENCES users (id) ON DELETE RESTRICT,
+        reported_by BIGINT      REFERENCES users (id) ON DELETE SET NULL,
         assigned_to BIGINT      REFERENCES users (id) ON DELETE SET NULL,
         created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -125,11 +200,12 @@ SCHEMA = [
     # The conversation on a ticket. Status and assignment changes are also
     # saved here as messages, so the thread shows the ticket's history.
     # ON DELETE CASCADE: deleting a ticket deletes its messages too.
+    # ON DELETE SET NULL: deleting a user keeps their messages, unsigned.
     """
     CREATE TABLE IF NOT EXISTS messages (
         id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
         incident_id BIGINT      NOT NULL REFERENCES incidents (id) ON DELETE CASCADE,
-        user_id     BIGINT      NOT NULL REFERENCES users (id) ON DELETE RESTRICT,
+        user_id     BIGINT      REFERENCES users (id) ON DELETE SET NULL,
         message     TEXT        NOT NULL CHECK (message <> ''),
         created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -182,7 +258,7 @@ SCHEMA = [
 ]
 
 # The tables the schema above creates. GET uses this to report what is missing.
-TABLES = ["users", "buildings", "locations", "incidents", "messages", "refresh_tokens", "ticket_reads"]
+TABLES = ["branches", "users", "buildings", "building_floors", "locations", "incidents", "messages", "refresh_tokens", "ticket_reads"]
 
 
 def apply_schema():
@@ -193,6 +269,10 @@ def apply_schema():
         for statement in SCHEMA:
             cursor.execute(statement)
         restore_incident_location_link(cursor)
+        allow_deleting_users_with_history(cursor)
+        add_assigned_status(cursor)
+        add_branches_to_users(cursor)
+        allow_basement_floors(cursor)
     connection.commit()
 
 
@@ -206,8 +286,26 @@ def apply_schema():
 # old shape is found, the old table is removed before SCHEMA runs (which then
 # creates the new one). Tickets keep everything except their old location.
 #
-# Both functions do nothing on a database that is already up to date, and on
-# a brand-new project they would not exist at all.
+# Later, user deletion changed: tickets and messages used to block it
+# (ON DELETE RESTRICT), now they are kept with the user link cleared
+# (ON DELETE SET NULL). allow_deleting_users_with_history() makes that change
+# on an existing database.
+#
+# Later still, an "assigned" status was added between "open" and
+# "in_progress". add_assigned_status() widens the CHECK rule on an existing
+# table and moves open-but-assigned tickets to the new status.
+#
+# Then branches arrived. add_branches_to_users() adds users.branch_id to an
+# existing table and puts every existing account in Princeton-Plainsboro,
+# the original site.
+#
+# Basement floors came next: allow_basement_floors() relaxes the CHECK on
+# locations.floor from ">= 1" to "<> 0" so negative floor numbers are allowed.
+# (The buildings changes for branches and basements are plain idempotent SQL
+# in SCHEMA, because ADD COLUMN IF NOT EXISTS needs no "if".)
+#
+# All of these functions do nothing on a database that is already up to
+# date, and on a brand-new project they would not exist at all.
 
 def replace_old_locations_table(cursor):
     """Drop the old free-text locations table if it is still there."""
@@ -245,6 +343,110 @@ def restore_incident_location_link(cursor):
         FOREIGN KEY (location_id) REFERENCES locations (id) ON DELETE RESTRICT
         """
     )
+
+
+def allow_deleting_users_with_history(cursor):
+    """
+    Let incidents.reported_by and messages.user_id be NULL, cleared when
+    the user is deleted (ON DELETE SET NULL) instead of blocking the delete.
+    """
+    for table, column in [("incidents", "reported_by"), ("messages", "user_id")]:
+        constraint = f"{table}_{column}_fkey"
+
+        # confdeltype is the ON DELETE rule: 'r' = RESTRICT, 'n' = SET NULL
+        cursor.execute(
+            "SELECT confdeltype FROM pg_constraint WHERE conname = %s",
+            (constraint,),
+        )
+        row = cursor.fetchone()
+        if row is not None and row["confdeltype"] == "n":
+            continue  # already up to date
+
+        logger.info("Upgrading %s.%s to ON DELETE SET NULL", table, column)
+        cursor.execute(f"ALTER TABLE {table} ALTER COLUMN {column} DROP NOT NULL")
+        cursor.execute(f"ALTER TABLE {table} DROP CONSTRAINT IF EXISTS {constraint}")
+        cursor.execute(
+            f"""
+            ALTER TABLE {table}
+            ADD CONSTRAINT {constraint}
+            FOREIGN KEY ({column}) REFERENCES users (id) ON DELETE SET NULL
+            """
+        )
+
+
+def add_assigned_status(cursor):
+    """
+    Allow status = 'assigned' on an existing incidents table, and move any
+    ticket that is still 'open' but has an engineer to 'assigned'.
+    """
+    cursor.execute(
+        """
+        SELECT pg_get_constraintdef(oid) AS rule
+        FROM pg_constraint
+        WHERE conname = 'incidents_status_check'
+        """
+    )
+    row = cursor.fetchone()
+    if row is not None and "assigned" not in row["rule"]:
+        logger.info("Adding 'assigned' to the allowed incident statuses")
+        cursor.execute("ALTER TABLE incidents DROP CONSTRAINT incidents_status_check")
+        cursor.execute(
+            """
+            ALTER TABLE incidents
+            ADD CONSTRAINT incidents_status_check
+            CHECK (status IN ('open', 'assigned', 'in_progress', 'blocked', 'resolved', 'closed'))
+            """
+        )
+
+    # Safe to run every time: it only touches tickets in the old state.
+    cursor.execute(
+        "UPDATE incidents SET status = 'assigned' WHERE status = 'open' AND assigned_to IS NOT NULL"
+    )
+    if cursor.rowcount:
+        logger.info("Moved %s open-but-assigned tickets to 'assigned'", cursor.rowcount)
+
+
+def add_branches_to_users(cursor):
+    """
+    Give an existing users table its branch_id column. Accounts created
+    before branches existed all belong to Princeton-Plainsboro.
+    """
+    cursor.execute(
+        """
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'users' AND column_name = 'branch_id'
+        """
+    )
+    if cursor.fetchone() is not None:
+        return  # already there
+
+    logger.info("Adding branch_id to users; existing accounts go to Princeton-Plainsboro")
+    cursor.execute(
+        "ALTER TABLE users ADD COLUMN branch_id BIGINT REFERENCES branches (id) ON DELETE RESTRICT"
+    )
+    cursor.execute(
+        """
+        UPDATE users
+        SET branch_id = (SELECT id FROM branches WHERE name = 'Princeton-Plainsboro')
+        WHERE branch_id IS NULL
+        """
+    )
+    cursor.execute("ALTER TABLE users ALTER COLUMN branch_id SET NOT NULL")
+
+
+def allow_basement_floors(cursor):
+    """Let locations.floor be negative (basements) on an existing table."""
+    cursor.execute(
+        "SELECT pg_get_constraintdef(oid) AS rule FROM pg_constraint WHERE conname = 'locations_floor_check'"
+    )
+    row = cursor.fetchone()
+    if row is None or ">= 1" not in row["rule"]:
+        return  # already the new rule (or no constraint to fix)
+
+    logger.info("Allowing basement floors in locations")
+    cursor.execute("ALTER TABLE locations DROP CONSTRAINT locations_floor_check")
+    cursor.execute("ALTER TABLE locations ADD CONSTRAINT locations_floor_check CHECK (floor <> 0)")
 
 
 def existing_tables():

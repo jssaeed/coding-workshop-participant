@@ -110,7 +110,8 @@ def current_user(event):
             so a promotion or demotion applies immediately. A missing row
             means the account was deleted.
 
-    Returns a dict with id, email and role. Raises 401 on any failure.
+    Returns a dict with id, email, role and branch_id. Raises 401 on any
+    failure.
     """
     authorization = headers(event).get("authorization", "")
     if not authorization.lower().startswith("bearer "):
@@ -125,13 +126,18 @@ def current_user(event):
         raise HttpError(401, "Token is invalid")
 
     user = fetch_one(
-        "SELECT id, email, role FROM users WHERE id = %s",
+        "SELECT id, email, role, branch_id FROM users WHERE id = %s",
         (int(claims["sub"]),),
     )
     if user is None:
         raise HttpError(401, "Account no longer exists")
 
-    return {"id": user["id"], "email": user["email"], "role": user["role"]}
+    return {
+        "id": user["id"],
+        "email": user["email"],
+        "role": user["role"],
+        "branch_id": user["branch_id"],
+    }
 
 
 # --- refresh tokens --------------------------------------------------------

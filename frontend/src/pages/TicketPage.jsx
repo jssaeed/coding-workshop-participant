@@ -1,7 +1,15 @@
 import { useEffect, useState } from 'react'
+import {
+  Avatar, Button, Card, Descriptions, Divider, Form, Input, InputNumber, Select, Space, Tag, Typography,
+} from 'antd'
+import { ArrowLeftOutlined, SendOutlined } from '@ant-design/icons'
 import { buildings, inbox, incidents, messages, users } from '../services/api'
-import { STATUSES, formatDate, formatLocation, isAdmin, isStaff, label, range } from '../services/format'
+import {
+  PRIORITIES, PRIORITY_COLORS, STATUSES, STATUS_COLORS,
+  floorOptions, formatDate, formatLocation, initial, isAdmin, isStaff, label, personName, range, roomLabel, roomsOnFloor,
+} from '../services/format'
 import Alert from '../components/Alert'
+import TicketProgress from '../components/TicketProgress'
 
 // One ticket: its details, the actions the user is allowed to take, and the
 // message thread. Opening the page marks the ticket as read.
@@ -15,14 +23,14 @@ export default function TicketPage({ id, user, onBack, setUnread }) {
 
   // Actions
   const [staff, setStaff] = useState([]) // engineers and admins, for the assign dropdown
-  const [assignee, setAssignee] = useState('')
+  const [assignee, setAssignee] = useState('') // '' means unassigned
   const [status, setStatus] = useState('')
-  const [priority, setPriority] = useState('')
+  const [priority, setPriority] = useState(3)
   // Location form (admin only): buildings for the dropdown, plus the chosen place
   const [buildingList, setBuildingList] = useState([])
-  const [buildingId, setBuildingId] = useState('')
-  const [floor, setFloor] = useState('')
-  const [room, setRoom] = useState('')
+  const [buildingId, setBuildingId] = useState('') // '' means no location
+  const [floor, setFloor] = useState(null)
+  const [room, setRoom] = useState(null)
   const [newMessage, setNewMessage] = useState('')
   const [actionError, setActionError] = useState('')
   const [busy, setBusy] = useState(false)
@@ -34,18 +42,18 @@ export default function TicketPage({ id, user, onBack, setUnread }) {
       try {
         const loadedTicket = await incidents.get(id)
         setTicket(loadedTicket)
-        setAssignee(loadedTicket.assignedTo ? String(loadedTicket.assignedTo.id) : '')
+        setAssignee(loadedTicket.assignedTo ? loadedTicket.assignedTo.id : '')
         setStatus(loadedTicket.status)
-        setPriority(String(loadedTicket.priority))
+        setPriority(loadedTicket.priority)
         // Start the location form at the ticket's current place
         const place = loadedTicket.location
-        setBuildingId(place ? String(place.building.id) : '')
-        setFloor(place ? String(place.floor) : '')
-        setRoom(place && place.room !== null ? String(place.room) : '')
+        setBuildingId(place ? place.building.id : '')
+        setFloor(place ? place.floor : null)
+        setRoom(place ? place.room : null)
         setThread(await messages.list(id))
 
         const read = await inbox.markRead(id)
-        setUnread(read.unread) // update the badge in the nav
+        setUnread(read.unread) // update the bell badge in the header
       } catch (err) {
         setError(err.message)
       } finally {
@@ -64,7 +72,8 @@ export default function TicketPage({ id, user, onBack, setUnread }) {
   }, [user])
 
   // The building chosen in the location form, so we know how many floors to offer.
-  const chosenBuilding = buildingList.find((b) => String(b.id) === buildingId)
+  const chosenBuilding = buildingList.find((b) => b.id === buildingId)
+  const roomCount = roomsOnFloor(chosenBuilding, floor)
 
   // Run an action, then reload the ticket so the page shows the result.
   async function runAction(action) {
@@ -80,54 +89,31 @@ export default function TicketPage({ id, user, onBack, setUnread }) {
     }
   }
 
-  function handleAssign(event) {
-    event.preventDefault()
-    runAction(() => incidents.assign(id, assignee ? Number(assignee) : null))
-  }
-
-  function handleStatus(event) {
-    event.preventDefault()
-    runAction(() => incidents.updateStatus(id, status))
-  }
-
-  function handlePriority(event) {
-    event.preventDefault()
-    runAction(() => incidents.updatePriority(id, Number(priority)))
-  }
-
-  function handleLocation(event) {
-    event.preventDefault()
+  function handleLocation() {
     // No building chosen means "clear the location"
-    const location = buildingId
-      ? {
-          buildingId: Number(buildingId),
-          floor: Number(floor),
-          room: room === '' ? undefined : Number(room),
-        }
-      : null
+    const location = buildingId !== '' ? { buildingId, floor, room: room ?? undefined } : null
     runAction(() => incidents.updateLocation(id, location))
   }
 
-  function handlePost(event) {
-    event.preventDefault()
+  function handlePost() {
     runAction(async () => {
       await messages.create(id, newMessage)
       setNewMessage('')
     })
   }
 
-  if (loading) return <p>Loading…</p>
+  if (loading) return <Card loading />
 
   if (!ticket) {
     return (
       <div>
-        <button type="button" onClick={onBack}>← Back</button>
+        <Button icon={<ArrowLeftOutlined />} onClick={onBack}>Back</Button>
         <Alert error={error || 'Ticket not found'} />
       </div>
     )
   }
 
-  // The backend checks these too; this just hides buttons that would fail.
+  // The backend checks these too; this just hides controls that would fail.
   const canAssign = isAdmin(user)
   const canChangeLocation = isAdmin(user)
   // The assigned engineer, or any admin, can change status and priority
@@ -137,181 +123,219 @@ export default function TicketPage({ id, user, onBack, setUnread }) {
   // True when the location form matches what the ticket already has
   const place = ticket.location
   const locationUnchanged =
-    buildingId === (place ? String(place.building.id) : '') &&
-    floor === (place ? String(place.floor) : '') &&
-    room === (place && place.room !== null ? String(place.room) : '')
+    buildingId === (place ? place.building.id : '') &&
+    floor === (place ? place.floor : null) &&
+    (room ?? null) === (place ? place.room : null)
 
   return (
     <div>
-      <button type="button" onClick={onBack}>← Back to tickets</button>
+      <Button icon={<ArrowLeftOutlined />} onClick={onBack} style={{ marginBottom: 16 }}>
+        Back to tickets
+      </Button>
 
-      <h1>
-        #{ticket.id} {ticket.title}{' '}
-        <span className={`badge status-${ticket.status}`}>{label(ticket.status)}</span>
-      </h1>
+      <TicketProgress status={ticket.status} />
 
-      <Alert error={error} />
-
-      <dl className="details">
-        <dt>Priority</dt>
-        <dd>{ticket.priority}</dd>
-        <dt>Location</dt>
-        <dd>{formatLocation(ticket.location)}</dd>
-        <dt>Reported by</dt>
-        <dd>{ticket.reportedBy.name} ({ticket.reportedBy.email})</dd>
-        <dt>Assigned to</dt>
-        <dd>{ticket.assignedTo ? ticket.assignedTo.name : 'Unassigned'}</dd>
-        <dt>Created</dt>
-        <dd>{formatDate(ticket.createdAt)}</dd>
-        <dt>Updated</dt>
-        <dd>{formatDate(ticket.updatedAt)}</dd>
-        {ticket.resolvedAt && (
+      <Card
+        title={
+          <Space wrap>
+            <span>#{ticket.id} {ticket.title}</span>
+            <Tag color={STATUS_COLORS[ticket.status]}>{label(ticket.status)}</Tag>
+            <Tag color={PRIORITY_COLORS[ticket.priority]}>P{ticket.priority}</Tag>
+          </Space>
+        }
+      >
+        <Alert error={error} />
+        <Descriptions column={{ xs: 1, sm: 2 }} size="small">
+          <Descriptions.Item label="Location">{formatLocation(ticket.location)}</Descriptions.Item>
+          <Descriptions.Item label="Reported by">
+            {personName(ticket.reportedBy)}
+            {ticket.reportedBy && ` (${ticket.reportedBy.email})`}
+          </Descriptions.Item>
+          <Descriptions.Item label="Assigned to">
+            {ticket.assignedTo ? ticket.assignedTo.name : 'Unassigned'}
+          </Descriptions.Item>
+          <Descriptions.Item label="Created">{formatDate(ticket.createdAt)}</Descriptions.Item>
+          <Descriptions.Item label="Updated">{formatDate(ticket.updatedAt)}</Descriptions.Item>
+          {ticket.resolvedAt && (
+            <Descriptions.Item label="Resolved">{formatDate(ticket.resolvedAt)}</Descriptions.Item>
+          )}
+        </Descriptions>
+        {ticket.description && (
           <>
-            <dt>Resolved</dt>
-            <dd>{formatDate(ticket.resolvedAt)}</dd>
+            <Divider style={{ margin: '12px 0' }} />
+            <Typography.Paragraph className="description">{ticket.description}</Typography.Paragraph>
           </>
         )}
-      </dl>
-
-      {ticket.description && <p className="description">{ticket.description}</p>}
+      </Card>
 
       {(canAssign || canChangeStatus) && (
-        <div className="panel">
-          <h2>Actions</h2>
-
-          {canAssign && (
-            <form onSubmit={handleAssign} className="row">
-              <label>
-                Assign to
-                <select value={assignee} onChange={(e) => setAssignee(e.target.value)}>
-                  <option value="">Unassigned</option>
-                  {staff.map((person) => (
-                    <option key={person.id} value={person.id}>
-                      {person.name} ({label(person.role)})
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <button type="submit" disabled={busy}>Assign</button>
-            </form>
-          )}
-
-          {canChangeStatus && (
-            <form onSubmit={handleStatus} className="row">
-              <label>
-                Status
-                <select value={status} onChange={(e) => setStatus(e.target.value)}>
-                  {STATUSES.map((s) => (
-                    <option key={s} value={s}>{label(s)}</option>
-                  ))}
-                </select>
-              </label>
-              <button type="submit" disabled={busy || status === ticket.status}>
-                Update status
-              </button>
-            </form>
-          )}
-
-          {canChangeStatus && (
-            <form onSubmit={handlePriority} className="row">
-              <label>
-                Priority (1 = most urgent)
-                <select value={priority} onChange={(e) => setPriority(e.target.value)}>
-                  {range(5).map((n) => (
-                    <option key={n} value={n}>{n}</option>
-                  ))}
-                </select>
-              </label>
-              <button type="submit" disabled={busy || Number(priority) === ticket.priority}>
-                Update priority
-              </button>
-            </form>
-          )}
-
-          {canChangeLocation && (
-            <form onSubmit={handleLocation} className="row">
-              <label>
-                Building
-                <select
-                  value={buildingId}
-                  onChange={(e) => {
-                    setBuildingId(e.target.value)
-                    setFloor('') // the floor list changes with the building
-                    setRoom('')
-                  }}
+        <Card title="Actions" style={{ marginTop: 16 }}>
+          <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+            {canAssign && (
+              <Form layout="inline">
+                <Form.Item label="Assign to">
+                  <Select
+                    value={assignee}
+                    onChange={setAssignee}
+                    style={{ width: 220 }}
+                    options={[
+                      { value: '', label: 'Unassigned' },
+                      ...staff.map((p) => ({ value: p.id, label: `${p.name} (${label(p.role)})` })),
+                    ]}
+                  />
+                </Form.Item>
+                <Button
+                  onClick={() => runAction(() => incidents.assign(id, assignee === '' ? null : assignee))}
+                  loading={busy}
+                  disabled={assignee === (ticket.assignedTo ? ticket.assignedTo.id : '')}
                 >
-                  <option value="">No location</option>
-                  {buildingList.map((b) => (
-                    <option key={b.id} value={b.id}>{b.name}</option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Floor
-                <select
-                  value={floor}
-                  onChange={(e) => setFloor(e.target.value)}
-                  disabled={!chosenBuilding}
-                  required={!!chosenBuilding}
+                  Assign
+                </Button>
+              </Form>
+            )}
+
+            {canChangeStatus && (
+              <Form layout="inline">
+                <Form.Item label="Status">
+                  <Select
+                    value={status}
+                    onChange={setStatus}
+                    style={{ width: 160 }}
+                    // "open" and "assigned" follow the assignment (the backend
+                    // enforces this too): use the Assign form to change them.
+                    options={STATUSES.map((s) => ({
+                      value: s,
+                      label: label(s),
+                      disabled:
+                        (s === 'open' && ticket.assignedTo !== null) ||
+                        (s === 'assigned' && ticket.assignedTo === null),
+                    }))}
+                  />
+                </Form.Item>
+                <Button
+                  onClick={() => runAction(() => incidents.updateStatus(id, status))}
+                  loading={busy}
+                  disabled={status === ticket.status}
                 >
-                  <option value="">Choose…</option>
-                  {chosenBuilding && range(chosenBuilding.floors).map((n) => (
-                    <option key={n} value={n}>{n}</option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Room (optional)
-                <input
-                  type="number"
-                  min="1"
-                  value={room}
-                  onChange={(e) => setRoom(e.target.value)}
-                  disabled={!chosenBuilding}
-                />
-              </label>
-              <button type="submit" disabled={busy || locationUnchanged}>
-                Update location
-              </button>
-            </form>
-          )}
-        </div>
+                  Update status
+                </Button>
+              </Form>
+            )}
+
+            {canChangeStatus && (
+              <Form layout="inline">
+                <Form.Item label="Priority (1 = most urgent)">
+                  <Select
+                    value={priority}
+                    onChange={setPriority}
+                    style={{ width: 100 }}
+                    options={PRIORITIES.map((p) => ({ value: p, label: `P${p}` }))}
+                  />
+                </Form.Item>
+                <Button
+                  onClick={() => runAction(() => incidents.updatePriority(id, priority))}
+                  loading={busy}
+                  disabled={priority === ticket.priority}
+                >
+                  Update priority
+                </Button>
+              </Form>
+            )}
+
+            {canChangeLocation && (
+              <Form layout="inline">
+                <Form.Item label="Building">
+                  <Select
+                    value={buildingId}
+                    onChange={(value) => {
+                      setBuildingId(value)
+                      setFloor(null) // the floor list changes with the building
+                      setRoom(null)
+                    }}
+                    style={{ width: 180 }}
+                    options={[
+                      { value: '', label: 'No location' },
+                      ...buildingList.map((b) => ({ value: b.id, label: b.name })),
+                    ]}
+                  />
+                </Form.Item>
+                <Form.Item label="Floor">
+                  <Select
+                    value={floor}
+                    onChange={(value) => { setFloor(value); setRoom(null) }}
+                    placeholder="Choose…"
+                    disabled={!chosenBuilding}
+                    style={{ width: 110 }}
+                    options={floorOptions(chosenBuilding)}
+                  />
+                </Form.Item>
+                <Form.Item label="Room">
+                  {roomCount > 0 ? (
+                    <Select allowClear value={room} onChange={(v) => setRoom(v ?? null)} placeholder="Choose…" style={{ width: 110 }}
+                            options={range(roomCount).map((n) => ({ value: n, label: roomLabel(chosenBuilding, floor, n) }))} />
+                  ) : (
+                    <InputNumber min={1} value={room} onChange={setRoom} disabled={!chosenBuilding} style={{ width: 100 }} />
+                  )}
+                </Form.Item>
+                <Button
+                  onClick={handleLocation}
+                  loading={busy}
+                  disabled={locationUnchanged || (chosenBuilding && !floor)}
+                >
+                  Update location
+                </Button>
+              </Form>
+            )}
+          </Space>
+          <Alert error={actionError} />
+        </Card>
       )}
 
-      <h2>Messages</h2>
-      {thread.length === 0 && <p>No messages yet.</p>}
-      {thread.length > 0 && (
+      <Card title="Messages" style={{ marginTop: 16 }}>
+        {thread.length === 0 && <p className="muted">No messages yet.</p>}
         <ul className="thread">
           {thread.map((message) => (
             <li key={message.id}>
-              <div className="meta">
-                <strong>{message.author.name}</strong> ({label(message.author.role)}) ·{' '}
-                {formatDate(message.createdAt)}
+              <Avatar size="small" style={{ backgroundColor: message.author ? '#1e3a5f' : '#9ca3af', flexShrink: 0 }}>
+                {message.author ? initial(message.author.name) : '?'}
+              </Avatar>
+              <div>
+                <div>
+                  <strong>{personName(message.author)}</strong>
+                  {message.author && <Tag>{label(message.author.role)}</Tag>}
+                  <span className="muted">· {formatDate(message.createdAt)}</span>
+                </div>
+                <div className="message-text">{message.message}</div>
               </div>
-              <div>{message.message}</div>
             </li>
           ))}
         </ul>
-      )}
 
-      {isClosed ? (
-        <p className="muted">This ticket is closed. Reopen it to post again.</p>
-      ) : (
-        <form onSubmit={handlePost}>
-          <label>
-            New message
-            <textarea
+        {isClosed ? (
+          <p className="muted">This ticket is closed. Reopen it to post again.</p>
+        ) : (
+          <Space.Compact style={{ width: '100%', marginTop: 12 }}>
+            <Input.TextArea
               value={newMessage}
               onChange={(e) => setNewMessage(e.target.value)}
-              rows={3}
-              required
+              placeholder="Write a message…"
+              autoSize={{ minRows: 2, maxRows: 6 }}
+              onPressEnter={(e) => {
+                if (!e.shiftKey && newMessage.trim()) { e.preventDefault(); handlePost() }
+              }}
             />
-          </label>
-          <button type="submit" disabled={busy || newMessage.trim() === ''}>Post</button>
-        </form>
-      )}
-
-      <Alert error={actionError} />
+            <Button
+              type="primary"
+              icon={<SendOutlined />}
+              onClick={handlePost}
+              loading={busy}
+              disabled={newMessage.trim() === ''}
+            >
+              Post
+            </Button>
+          </Space.Compact>
+        )}
+      </Card>
     </div>
   )
 }

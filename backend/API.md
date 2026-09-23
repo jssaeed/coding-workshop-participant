@@ -61,7 +61,7 @@ Every error has the same shape:
 | `403` | Signed in, but this role may not do this |
 | `404` | No such record, or no access to it |
 | `405` | Route exists but not for this method |
-| `409` | Conflict with existing data (duplicate email, closed ticket, user still referenced) |
+| `409` | Conflict with existing data (duplicate email, closed ticket, building in use) |
 | `500` | Server or database error — details are in the Lambda logs, not the response |
 
 Text fields are trimmed. Emails are stored lower-cased and matched case-insensitively.
@@ -70,21 +70,32 @@ Text fields are trimmed. Emails are stored lower-cased and matched case-insensit
 
 ## Users — `/api/users`
 
-### `POST /api/users` — create an account
+### `GET /api/users/branches` — the company branches
 
-Public. Always creates an `employee`; a `role` in the body is ignored. The email must be a company address ending in `@acme.inc` (case-insensitive).
+Public (no token), because the signup form needs it before anyone is signed in.
 
 ```json
-{ "email": "ana@acme.inc", "password": "at least 8 chars", "name": "Ana" }
+[{ "id": 2, "name": "Miami" }, { "id": 1, "name": "Princeton-Plainsboro" }]
+```
+
+### `POST /api/users` — create an account
+
+Public. Always creates an `employee`; a `role` in the body is ignored. The email must be a company address ending in `@acme.inc` (case-insensitive). `branchId` picks the branch the person works at.
+
+```json
+{ "email": "ana@acme.inc", "password": "at least 8 chars", "name": "Ana", "branchId": 1 }
 ```
 
 `201` →
 ```json
 { "id": 1, "email": "ana@acme.inc", "name": "Ana", "role": "employee",
+  "branch": { "id": 1, "name": "Princeton-Plainsboro" },
   "createdAt": "2026-09-22T14:03:11.412Z", "updatedAt": "2026-09-22T14:03:11.412Z" }
 ```
 
-Errors: `400` invalid email, email not ending in `@acme.inc`, password under 8 characters or over 72 bytes, missing name · `409` email already registered.
+Every user object, here and elsewhere, carries `branch`.
+
+Errors: `400` invalid email, email not ending in `@acme.inc`, password under 8 characters or over 72 bytes, missing name, missing or unknown `branchId` · `409` email already registered.
 
 ### `POST /api/users/login` — log in
 
@@ -131,7 +142,7 @@ Public. Revokes the given refresh token so it cannot be used again. The client s
 
 ### `GET /api/users` — list accounts
 
-Admin only. Optional `?role=employee|engineer|facility_admin`, useful for the assign-ticket dropdown.
+Admin only. Returns the accounts at the **caller's own branch**; a facility admin never sees or manages another branch's people. Optional `?role=employee|engineer|facility_admin`, useful for the assign-ticket dropdown.
 
 `200` → array of user objects, newest first.
 
@@ -145,53 +156,67 @@ Admin only.
 
 `role` is one of `employee`, `engineer`, `facility_admin`. `200` → the updated user. The change applies to the user's next request immediately. If the change is a demotion, the user's refresh tokens are revoked as well.
 
-Errors: `400` unknown role · `403` an admin changing their own role · `404` no such user.
+Errors: `400` unknown role · `403` an admin changing their own role, or a user at another branch · `404` no such user.
 
 ### `DELETE /api/users/{id}` — delete an account
 
-Admin only. `204` on success.
+Admin only. `204` on success. Their refresh tokens and inbox read-marks are deleted with them.
 
-Errors: `403` deleting your own account · `404` no such user · `409` the user has reported tickets or written messages — that history is kept, so the account cannot be removed.
+Tickets they reported and messages they wrote are kept. On those, `reportedBy` / `author` becomes `null`, which the frontend shows as "Deleted user". A ticket assigned to them goes back to unassigned.
+
+Errors: `403` deleting your own account, or a user at another branch · `404` no such user.
 
 ---
 
 ## Buildings — `/api/buildings`
 
-The places tickets can be reported in. A facility admin defines each building with a name and how many floors it has; the ticket form then offers buildings and floors as dropdowns instead of free text.
+Buildings belong to a branch. Everyone sees, and admins manage, only the buildings at their own branch.
 
 ### Building object
 
 ```json
-{ "id": 2, "name": "HQ", "floors": 5, "createdAt": "...", "updatedAt": "..." }
+{
+  "id": 1, "branchId": 1, "name": "HQ",
+  "floors": 3, "basementFloors": 2,
+  "roomNumbersIncludeFloor": true,
+  "rooms": [
+    { "floor": 3, "rooms": 10 }, { "floor": 2, "rooms": 10 }, { "floor": 1, "rooms": 10 },
+    { "floor": -1, "rooms": 4 }, { "floor": -2, "rooms": 0 }
+  ],
+  "createdAt": "…", "updatedAt": "…"
+}
 ```
+
+- `floors` is the number of above-ground floors (1–200), numbered `1..floors`.
+- `basementFloors` (0–20) are numbered `-1..-basementFloors`; the app shows `-1` as **B1**, `-2` as **B2**.
+- `rooms` lists every floor in display order (top floor first, then B1, B2, …) with how many rooms it has. `0` means not set: the ticket form then accepts any room number. Otherwise the ticket form offers rooms `1..rooms` and the API rejects anything higher.
+- `roomNumbersIncludeFloor` (default `false`): when true, rooms are *written* with the floor in front. Room 1 on floor 5 is `501` while every floor has fewer than 100 rooms, and `5001` once any floor has 100 or more; on a basement floor it is `B101`. This only affects how rooms are displayed. The API always stores and accepts the plain room index (`"room": 1`), and ticket locations carry the written form in `roomLabel`. Turning the flag **on** converts existing tickets whose room was typed in that style: room `502` on floor 5 becomes index `2` (only when the leading digits equal the ticket's own floor; other rooms are left as they are).
 
 ### `GET /api/buildings` — list buildings
 
-Any signed-in user. `200` → array, alphabetical by name.
+Any signed-in user. `200` → the buildings at the caller's branch, alphabetical.
 
 ### `POST /api/buildings` — add a building
 
-Admin only.
+Admin only; the building is created at the admin's branch.
 
 ```json
-{ "name": "HQ", "floors": 5 }
+{ "name": "HQ", "floors": 3, "basementFloors": 2, "roomsPerFloor": 10, "rooms": [{ "floor": -1, "rooms": 4 }], "roomNumbersIncludeFloor": true }
 ```
 
-`floors` is 1–200. `201` → the building. Errors: `400` blank name or floors out of range · `409` a building with that name (any case) already exists.
+`basementFloors` defaults to 0. Rooms can be given as `roomsPerFloor` (the same number on every floor), as `rooms` (a list of `{floor, rooms}` for some or all floors), or both — a floor's `rooms` entry wins over `roomsPerFloor`, and floors given neither get 0.
 
-### `PUT /api/buildings/{id}` — rename or change floor count
+`201` → the building. Errors: `400` blank name, floors or rooms out of range, or `rooms` naming a floor the building does not have · `409` a building with that name (any case) already exists at this branch.
 
-Admin only. Send either or both fields:
+### `PUT /api/buildings/{id}` — rename, change floors or rooms
 
-```json
-{ "floors": 6 }
-```
+Admin only, own branch only. Send any of `name`, `floors`, `basementFloors`, `roomsPerFloor`, `rooms`, `roomNumbersIncludeFloor`; fields left out keep their value, and floors not mentioned keep their room count.
 
-`200` → the building. Errors: `400` floors below a floor that a ticket already uses (the message says which) · `404` no such building · `409` name taken.
+`200` → the building. Errors: `400` a floor or room count would drop below one a ticket already uses (the message says which) · `403` the building is at another branch · `404` no such building · `409` name taken at this branch.
 
 ### `DELETE /api/buildings/{id}` — remove a building
 
-Admin only. `204`. Errors: `404` no such building · `409` tickets are located in it.
+Admin only, own branch only. `204`. Errors: `403` another branch · `404` no such building · `409` tickets are located in it.
 
 ---
 
@@ -206,8 +231,8 @@ Admin only. `204`. Errors: `404` no such building · `409` tickets are located i
   "description": "Under the sink in the 3rd floor kitchen",
   "status": "in_progress",
   "priority": 2,
-  "location": { "id": 1, "building": { "id": 2, "name": "HQ" }, "floor": 3, "room": 12 },
-  "reportedBy": { "id": 4, "name": "Ana", "email": "ana@acme.inc" },
+  "location": { "id": 1, "building": { "id": 2, "name": "HQ" }, "floor": 3, "room": 12, "roomLabel": "312" },
+  "reportedBy": { "id": 4, "name": "Ana", "email": "ana@acme.inc" },   // null if that account was deleted
   "assignedTo": { "id": 7, "name": "Bob", "email": "bob@example.com" },
   "createdAt": "2026-09-22T14:10:02.101Z",
   "updatedAt": "2026-09-22T15:42:37.880Z",
@@ -215,7 +240,7 @@ Admin only. `204`. Errors: `404` no such building · `409` tickets are located i
 }
 ```
 
-- `status`: `open` → `in_progress` → `blocked` / `resolved` → `closed`. New tickets are `open`.
+- `status`: `open` → `assigned` → `in_progress` → `blocked` / `resolved` → `closed`. New tickets are `open`; assigning an engineer moves an open ticket to `assigned` automatically, and unassigning moves an `assigned` ticket back to `open`.
 - `priority`: `1` (most urgent) to `5`. Defaults to `3`.
 - `location`, `assignedTo`, `resolvedAt`, and `location.room` are `null` when not set. `floor` and `room` are numbers.
 - `resolvedAt` is stamped automatically when status becomes `resolved` or `closed`, and cleared if the ticket is reopened.
@@ -233,11 +258,11 @@ Any signed-in user. The reporter is taken from the token.
 }
 ```
 
-`location` is optional. `buildingId` must be a building from `GET /api/buildings`; `floor` must be between 1 and that building's `floors`; `room` is an optional positive number. The same place is stored once and reused by every ticket reported there.
+`location` is optional. `buildingId` must be a building at your branch; `floor` is `1..floors` or `-1..-basementFloors` (no 0); `room` is an optional room index, at most the floor's room count when one is set. Responses add `roomLabel`, the room as the building writes it (`312` when it numbers rooms by floor, else `12`). The same place is stored once and reused by every ticket reported there.
 
 `201` → the ticket.
 
-Errors: `400` missing title, priority outside 1–5, unknown `buildingId`, floor outside the building's range, non-numeric room.
+Errors: `400` missing title, priority outside 1–5, unknown `buildingId` or one at another branch, floor outside the building's range (floors are `1..floors` and `-1..-basementFloors`; there is no 0), non-numeric room, or a room above the floor's room count.
 
 ### `GET /api/incidents` — list tickets
 
@@ -264,7 +289,7 @@ Admin only.
 { "assigneeId": 7 }
 ```
 
-Send `"assigneeId": null` to unassign. The assignee must be an engineer or admin.
+Send `"assigneeId": null` to unassign. The assignee must be an engineer or admin. An `open` ticket becomes `assigned`; an `assigned` ticket that is unassigned becomes `open` again; other statuses are left as they are.
 
 Also posts a message on the ticket, from the caller, so the new assignee and the reporter see it in their inbox:
 
@@ -288,7 +313,9 @@ Also posts a message on the ticket, from the caller, in the same transaction:
 
 `200` → the ticket.
 
-Errors: `400` unknown status, or the ticket is already in that status · `403` an engineer who is not assigned to this ticket · `404` no such ticket.
+`open` and `assigned` follow the assignment: a ticket with an engineer cannot be set to `open`, and a ticket without one cannot be set to `assigned`.
+
+Errors: `400` unknown status, the ticket is already in that status, `open` requested while an engineer is assigned, or `assigned` requested with no engineer · `403` an engineer who is not assigned to this ticket · `404` no such ticket.
 
 ### `PUT /api/incidents/{id}/priority` — change priority
 
@@ -322,6 +349,41 @@ Also posts a message on the ticket, from the caller, in the same transaction:
 
 Errors: `400` `location` key missing, unknown `buildingId`, floor outside the building's range, non-numeric room, or the ticket already has that location · `403` not an admin · `404` no such ticket.
 
+### `GET /api/incidents/stats/overview` — all tickets by status
+
+Admin only. `?days=N` (default 30, max 365) counts tickets created in the last N days.
+
+```json
+{ "total": 42, "byStatus": { "open": 20, "in_progress": 9, "blocked": 3, "resolved": 6, "closed": 4 } }
+```
+
+Every status is always present, with `0` when empty. Errors: `400` days outside 1–365 · `403` not an admin.
+
+### `GET /api/incidents/stats/locations` — tickets per building, floor or room
+
+Admin only, same `?days=` as above. Drill down by adding parameters:
+
+| Query | `level` | `items` |
+|---|---|---|
+| none | `building` | `[{ "id": 1, "name": "HQ", "count": 7 }, { "id": null, "name": "No location", "count": 2 }]` |
+| `?buildingId=1` | `floor` | `[{ "floor": 3, "count": 4 }]`, plus `building: { id, name }` |
+| `?buildingId=1&floor=3` | `room` | `[{ "room": 12, "label": "312", "count": 2 }, { "room": null, "label": null, "count": 1 }]`, plus `building` and `floor` |
+
+Buildings are sorted by count, floors and rooms by number. `null` room means the ticket gave no room. Errors: `400` bad parameter · `403` not an admin · `404` unknown building.
+
+### `GET /api/incidents/stats/mine` — the caller's own tickets by status
+
+Any signed-in user, same `?days=`.
+
+```json
+{
+  "reported": { "total": 5, "byStatus": { "open": 2, "in_progress": 1, "blocked": 0, "resolved": 1, "closed": 1 } },
+  "assigned": null
+}
+```
+
+`reported` counts tickets the caller filed. `assigned` counts tickets assigned to the caller and is `null` for employees.
+
 ---
 
 ## Messages — `/api/messages`
@@ -333,7 +395,7 @@ Errors: `400` `location` key missing, unknown `buildingId`, floor outside the bu
   "id": 31,
   "incidentId": 12,
   "message": "On my way up.",
-  "author": { "id": 7, "name": "Bob", "email": "bob@example.com", "role": "engineer" },
+  "author": { "id": 7, "name": "Bob", "email": "bob@example.com", "role": "engineer" },   // null if that account was deleted
   "createdAt": "2026-09-22T15:44:09.216Z",
   "updatedAt": "2026-09-22T15:44:09.216Z"
 }
@@ -434,7 +496,7 @@ TOKEN=$(curl -s -X POST $API/api/users/login -H 'Content-Type: application/json'
 
 # File a ticket (buildingId from GET /api/buildings, which an admin populates first)
 curl -s -X POST $API/api/incidents -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"title":"Leaking pipe","priority":2,"location":{"buildingId":1,"floor":3,"room":12}}'
+  -d '{"title":"Leaking pipe","priority":2,"location":{"buildingId":1,"floor":3,"room":12}}'   # floor -1 would be B1
 
 # See your tickets
 curl -s $API/api/incidents -H "Authorization: Bearer $TOKEN"

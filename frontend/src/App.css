@@ -1,194 +1,535 @@
-/* Minimal layout so the app is usable; visual design comes later. */
+/* Layout: header, content area and footer, plus a few page-level helpers. */
 
 .app {
+  min-height: 100vh;
+}
+
+/* --- header --------------------------------------------------------- */
+
+.header {
+  padding: 0 16px;
+  height: 56px;
+  line-height: 56px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.header-inner {
   max-width: 1100px;
   margin: 0 auto;
-  padding: 1rem;
-}
-
-.narrow {
-  max-width: 400px;
-  margin: 3rem auto;
-  padding: 0 1rem;
-}
-
-nav {
-  padding-bottom: 0.75rem;
-  margin-bottom: 1rem;
-  border-bottom: 1px solid #8884;
-}
-
-.row {
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem;
-  align-items: flex-end;
+  align-items: center;
+  gap: 24px;
 }
 
-.space-between {
-  justify-content: space-between;
-}
-
-.filters {
-  margin: 1rem 0;
-}
-
-.panel {
-  border: 1px solid #8884;
-  border-radius: 8px;
-  padding: 1rem;
-  margin: 1rem 0;
-}
-
-form label {
+.brand {
   display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  margin-bottom: 0.75rem;
-  font-size: 0.9em;
-}
-
-input,
-select,
-textarea {
-  font: inherit;
-  padding: 0.4em 0.6em;
-  border: 1px solid #8888;
-  border-radius: 6px;
-  background: transparent;
-  color: inherit;
-}
-
-button.link {
+  align-items: center;
+  gap: 10px;
   background: none;
   border: none;
   padding: 0;
-  color: #646cff;
-  text-decoration: underline;
-}
-
-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.95em;
-}
-
-th,
-td {
-  text-align: left;
-  padding: 0.5rem;
-  border-bottom: 1px solid #8884;
-}
-
-tr.clickable {
   cursor: pointer;
+  white-space: nowrap;
 }
 
-tr.clickable:hover {
-  background: #8881;
+.brand span {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+  text-align: left;
 }
 
-.badge {
-  display: inline-block;
-  padding: 0.1em 0.6em;
-  border-radius: 999px;
-  font-size: 0.8em;
-  border: 1px solid #8888;
-  vertical-align: middle;
+.brand-name.ant-typography {
+  color: #1e3a5f;
+  font-size: 15px;
+  letter-spacing: 0.02em;
 }
 
-.status-open { border-color: #4a90e2; }
-.status-in_progress { border-color: #f5a623; }
-.status-blocked { border-color: #d0021b; }
-.status-resolved { border-color: #7ed321; }
-.status-closed { border-color: #9b9b9b; opacity: 0.7; }
-
-.details {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: 0.25rem 1rem;
-  margin: 1rem 0;
+.brand-sub.ant-typography {
+  color: #6b7280;
+  font-size: 11px;
 }
 
-.details dt {
-  font-weight: 600;
+.header-menu {
+  flex: 1;
+  min-width: 0;
+  border-bottom: none;
+  line-height: 54px;
 }
 
-.details dd {
+.header-right {
+  margin-left: auto;
+}
+
+.header-icon.ant-btn {
+  color: #374151;
+  font-size: 18px;
+}
+
+.avatar-button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: #1f2937;
+}
+
+.avatar-name {
+  font-size: 14px;
+}
+
+@media (max-width: 700px) {
+  .brand-sub,
+  .avatar-name {
+    display: none;
+  }
+}
+
+/* --- content and footer ---------------------------------------------- */
+
+.content {
+  padding: 24px 16px;
+}
+
+.content-inner {
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+.footer {
+  text-align: center;
+  color: #6b7280;
+  font-size: 13px;
+  border-top: 1px solid #e5e7eb;
+}
+
+.footer-sep {
+  margin: 0 10px;
+  opacity: 0.5;
+}
+
+/* --- shared bits ----------------------------------------------------- */
+
+.page-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.page-title h1 {
   margin: 0;
+}
+
+.alert {
+  margin: 12px 0;
+}
+
+.muted {
+  color: #6b7280;
+}
+
+.clickable-row {
+  cursor: pointer;
 }
 
 .description {
   white-space: pre-wrap;
-  padding: 0.75rem;
-  border-left: 3px solid #8888;
+  margin: 0;
 }
+
+/* --- home page ------------------------------------------------------- */
+
+.hero {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 4px;
+  padding: 40px;
+  margin-bottom: 16px;
+}
+
+.hero img {
+  width: 100%;
+  max-width: 460px;
+  height: auto;
+  display: block;
+  margin: 0 auto;
+  border: 1px solid #e5e7eb;
+}
+
+.eyebrow.ant-typography {
+  color: #6b7280;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.lead.ant-typography {
+  font-size: 16px;
+  color: #4b5563;
+}
+
+.step-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 4px;
+  background: #eef2f7;
+  color: #1e3a5f;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  margin-bottom: 12px;
+}
+
+.step-number {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.abilities {
+  margin: 8px 0 0;
+  padding-left: 20px;
+}
+
+.abilities li {
+  margin-bottom: 4px;
+}
+
+/* --- login page ------------------------------------------------------ */
+
+.login-wrap {
+  display: flex;
+  justify-content: center;
+  padding: 32px 0;
+}
+
+.login-card {
+  width: 100%;
+  max-width: 420px;
+}
+
+.login-logo {
+  display: block;
+  margin: 0 auto 8px;
+}
+
+/* --- message thread and inbox ---------------------------------------- */
 
 .thread {
   list-style: none;
   padding: 0;
+  margin: 0;
 }
 
 .thread li {
-  padding: 0.5rem 0;
-  border-bottom: 1px solid #8884;
+  display: flex;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.message-text {
   white-space: pre-wrap;
+  margin-top: 4px;
 }
 
-.thread .meta {
-  font-size: 0.85em;
-  opacity: 0.8;
-}
-
-.alert {
-  padding: 0.5rem 0.75rem;
-  border-radius: 6px;
-  margin: 0.5rem 0;
-}
-
-.alert-error {
-  background: #d0021b22;
-  border: 1px solid #d0021b;
-}
-
-.alert-success {
-  background: #7ed32122;
-  border: 1px solid #7ed321;
-}
-
-.muted {
-  opacity: 0.7;
-}
-
-.badge.count {
-  margin-left: 0.4em;
-  background: #d0021b;
-  border-color: #d0021b;
-  color: #fff;
-  font-weight: 600;
-}
-
-.inbox {
-  list-style: none;
-  padding: 0;
-}
-
-.inbox li {
-  padding: 0.75rem 0.5rem;
-  border-bottom: 1px solid #8884;
-}
-
-.inbox li:hover {
-  background: #8881;
-}
-
-.inbox .meta {
-  font-size: 0.85em;
-  opacity: 0.8;
-}
-
-.inbox .preview {
+.preview {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* --- ticket progress bar --------------------------------------------- */
+
+.progress {
+  --fill: #1e3a5f;
+  --todo: #d9dee5;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin: 0 0 16px;
+  padding: 16px 16px 12px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 4px;
+}
+
+.progress-red { --fill: #cf1322; }
+.progress-green { --fill: #389e0d; }
+.progress-grey { --fill: #9ca3af; }
+
+.progress-steps {
+  list-style: none;
+  display: flex;
+  flex: 1;
+  margin: 0;
+  padding: 0;
+}
+
+.progress-step {
+  flex: 1;
+  text-align: center;
+  position: relative;
+}
+
+/* The connector: one line from this step's dot to the next step's dot,
+   drawn as a single piece so there is no seam where two halves would meet.
+   It is filled when this step is done (the next step is then done or
+   current); steps still to come get the grey line. */
+.progress-track {
+  position: relative;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.progress-track::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 100%;
+  height: 3px;
+  background: var(--todo);
+  transform: translateY(-50%);
+}
+
+.progress-step:last-child .progress-track::after {
+  display: none;
+}
+
+.progress-done .progress-track::after {
+  background: var(--fill);
+}
+
+.progress-dot {
+  position: relative;
+  z-index: 1;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 600;
+  background: #fff;
+  border: 2px solid var(--todo);
+  color: #6b7280;
+}
+
+.progress-done .progress-dot,
+.progress-current .progress-dot {
+  background: var(--fill);
+  border-color: var(--fill);
+  color: #fff;
+}
+
+.progress-label {
+  margin-top: 6px;
+  font-size: 13px;
+  color: #6b7280;
+}
+
+.progress-done .progress-label,
+.progress-current .progress-label {
+  color: #1f2937;
+  font-weight: 500;
+}
+
+/* A closed ticket: everything muted, no highlight on the labels */
+.progress-grey .progress-label {
+  color: #9ca3af;
+  font-weight: 400;
+}
+
+.progress-note {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: #cf1322;
+}
+
+/* The "Closed" marker that replaces a final dot */
+.progress-closed {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: #f3f4f6;
+  color: #4b5563;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+@media (max-width: 500px) {
+  .progress-label { font-size: 11px; }
+}
+
+/* --- statistics panel and charts ------------------------------------- */
+
+.stats-toolbar {
+  margin-bottom: 16px;
+}
+
+.tile-value {
+  font-size: 40px;
+  font-weight: 600;
+  line-height: 1.1;
+  color: #1f2937;
+}
+
+.tile-caption {
+  color: #6b7280;
+  font-size: 13px;
+  margin-top: 4px;
+}
+
+.chart {
+  position: relative;
+}
+
+.chart-title {
+  font-size: 13px;
+  color: #6b7280;
+  margin-bottom: 8px;
+}
+
+.chart-loading {
+  opacity: 0.6;
+  transition: opacity 0.2s;
+}
+
+/* Ring on the left, legend beside it (never underneath) */
+.donut-body {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
+.donut-body svg {
+  flex-shrink: 0;
+}
+
+.donut-total {
+  font-size: 24px;
+}
+
+.donut-total {
+  font-weight: 600;
+  fill: #1f2937;
+}
+
+.donut-caption {
+  font-size: 12px;
+  fill: #6b7280;
+}
+
+.chart-legend {
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.chart-legend td {
+  padding: 3px 8px 3px 0;
+  color: #1f2937;
+}
+
+.chart-legend tr.legend-dim td {
+  opacity: 0.45;
+}
+
+.legend-swatch {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+}
+
+.legend-value {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+
+.legend-pct {
+  text-align: right;
+  color: #6b7280;
+  font-variant-numeric: tabular-nums;
+}
+
+.bar-label {
+  font-size: 12px;
+  fill: #1f2937;
+}
+
+.bar-value {
+  font-size: 12px;
+  fill: #4b5563;
+  font-variant-numeric: tabular-nums;
+}
+
+.bar-clickable {
+  cursor: pointer;
+}
+
+.bar-clickable:hover .bar-label,
+.bar-clickable:focus .bar-label {
+  fill: #1e3a5f;
+  font-weight: 600;
+}
+
+.bar-row:focus {
+  outline: none;
+}
+
+.chart-tooltip {
+  position: absolute;
+  pointer-events: none;
+  background: #1f2937;
+  color: #fff;
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  z-index: 2;
+}
+
+.chart-tooltip strong {
+  font-size: 13px;
+}
+
+.chart-tooltip-key {
+  display: inline-block;
+  width: 10px;
+  height: 3px;
+  border-radius: 2px;
+}
+
+/* --- rooms-per-floor dialog ------------------------------------------ */
+
+.per-floor {
+  max-height: 50vh;
+  overflow-y: auto;
+}
+
+.per-floor-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 0;
+  border-bottom: 1px solid #f0f0f0;
 }

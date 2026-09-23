@@ -126,7 +126,8 @@ async function request(method, path, body, query, isRetry = false) {
 // --- the endpoints, grouped by service
 
 export const users = {
-  signup: (email, password, name) => request('POST', '/users', { email, password, name }),
+  branches: () => request('GET', '/users/branches'),
+  signup: (email, password, name, branchId) => request('POST', '/users', { email, password, name, branchId }),
   login: (email, password) => request('POST', '/users/login', { email, password }),
   me: () => request('GET', '/users/me'),
   logout: () => request('POST', '/users/logout', { refreshToken: getRefreshToken() }),
@@ -137,7 +138,8 @@ export const users = {
 
 export const buildings = {
   list: () => request('GET', '/buildings'),
-  create: (name, floors) => request('POST', '/buildings', { name, floors }),
+  // building is { name, floors, basementFloors, roomsPerFloor?, rooms?: [{floor, rooms}] }
+  create: (building) => request('POST', '/buildings', building),
   update: (id, changes) => request('PUT', `/buildings/${id}`, changes),
   remove: (id) => request('DELETE', `/buildings/${id}`),
 }
@@ -151,6 +153,15 @@ export const incidents = {
   updatePriority: (id, priority) => request('PUT', `/incidents/${id}/priority`, { priority }),
   // location is { buildingId, floor, room } or null to clear it
   updateLocation: (id, location) => request('PUT', `/incidents/${id}/location`, { location }),
+}
+
+// Numbers for the Statistics page. days limits every count to tickets
+// created in the last N days.
+export const stats = {
+  overview: (days) => request('GET', '/incidents/stats/overview', null, { days }),
+  locations: (days, buildingId, floor) =>
+    request('GET', '/incidents/stats/locations', null, { days, buildingId, floor }),
+  mine: (days) => request('GET', '/incidents/stats/mine', null, { days }),
 }
 
 export const messages = {

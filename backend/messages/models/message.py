@@ -1,7 +1,8 @@
 """
 Message model: the SQL for the messages table.
 
-Reads join the users table so each message comes back with its author's name.
+Reads join the users table so each message comes back with its author's name
+(a LEFT JOIN, because the author's account may have been deleted since).
 """
 
 from lib.database import execute, fetch_all, fetch_one
@@ -10,7 +11,7 @@ SELECT_MESSAGE = """
     SELECT m.id, m.incident_id, m.message, m.created_at, m.updated_at,
            m.user_id, u.name AS author_name, u.email AS author_email, u.role AS author_role
     FROM messages m
-    JOIN users u ON u.id = m.user_id
+    LEFT JOIN users u ON u.id = m.user_id
 """
 
 

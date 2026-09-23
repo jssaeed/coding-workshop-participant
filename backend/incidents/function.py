@@ -8,6 +8,9 @@ Incidents service: tickets.
     PUT  /api/incidents/{id}/status   change the status (assignee or admin)
     PUT  /api/incidents/{id}/priority change the priority (assignee or admin)
     PUT  /api/incidents/{id}/location move the ticket to another place (admin)
+    GET  /api/incidents/stats/overview   tickets by status (admin)
+    GET  /api/incidents/stats/locations  tickets per building / floor / room (admin)
+    GET  /api/incidents/stats/mine       the caller's own tickets by status
 
 This file only decides which controller function handles the request. The
 rules live in controllers/, the SQL in models/, the JSON shape in views/.
@@ -15,7 +18,7 @@ rules live in controllers/, the SQL in models/, the JSON shape in views/.
 
 import logging
 
-from controllers import incident_controller
+from controllers import incident_controller, stats_controller
 from lib.request import http_method, path_id, path_segments
 from lib.responses import HttpError, json_response, method_not_allowed, not_found
 
@@ -37,6 +40,19 @@ def route(event):
         if method == "GET":
             return incident_controller.list_incidents(event)
         return method_not_allowed(method)
+
+    # /api/incidents/stats/{overview|locations|mine}
+    # Checked before path_id(), because "stats" is not a ticket number.
+    if segments[0] == "stats":
+        if method != "GET":
+            return method_not_allowed(method)
+        if len(segments) == 2 and segments[1] == "overview":
+            return stats_controller.overview(event)
+        if len(segments) == 2 and segments[1] == "locations":
+            return stats_controller.locations(event)
+        if len(segments) == 2 and segments[1] == "mine":
+            return stats_controller.mine(event)
+        return not_found()
 
     incident_id = path_id(segments)
 
