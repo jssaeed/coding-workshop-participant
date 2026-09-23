@@ -51,12 +51,17 @@ def find_by_id(incident_id):
 
 def find_basic(incident_id):
     """
-    Return just id, status, reported_by and assigned_to, or None.
+    Return just the plain columns (id, status, priority, location_id,
+    reported_by, assigned_to), or None.
 
     Enough to decide who may see or change the ticket, without the joins.
     """
     return fetch_one(
-        "SELECT id, status, reported_by, assigned_to FROM incidents WHERE id = %s",
+        """
+        SELECT id, status, priority, location_id, reported_by, assigned_to
+        FROM incidents
+        WHERE id = %s
+        """,
         (incident_id,),
     )
 
@@ -140,6 +145,39 @@ def update_status(incident_id, status, author_id, note):
 
     execute_many([
         (update_sql, (status, incident_id)),
+        (
+            "INSERT INTO messages (incident_id, user_id, message) VALUES (%s, %s, %s)",
+            (incident_id, author_id, note),
+        ),
+    ])
+    return find_by_id(incident_id)
+
+
+def update_priority(incident_id, priority, author_id, note):
+    """Change the priority and add a message saying so, in one transaction."""
+    execute_many([
+        (
+            "UPDATE incidents SET priority = %s, updated_at = NOW() WHERE id = %s",
+            (priority, incident_id),
+        ),
+        (
+            "INSERT INTO messages (incident_id, user_id, message) VALUES (%s, %s, %s)",
+            (incident_id, author_id, note),
+        ),
+    ])
+    return find_by_id(incident_id)
+
+
+def update_location(incident_id, location_id, author_id, note):
+    """
+    Change (or clear, with None) the location and add a message saying so,
+    in one transaction.
+    """
+    execute_many([
+        (
+            "UPDATE incidents SET location_id = %s, updated_at = NOW() WHERE id = %s",
+            (location_id, incident_id),
+        ),
         (
             "INSERT INTO messages (incident_id, user_id, message) VALUES (%s, %s, %s)",
             (incident_id, author_id, note),

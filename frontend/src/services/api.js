@@ -148,6 +148,9 @@ export const incidents = {
   get: (id) => request('GET', `/incidents/${id}`),
   assign: (id, assigneeId) => request('PUT', `/incidents/${id}/assign`, { assigneeId }),
   updateStatus: (id, status) => request('PUT', `/incidents/${id}/status`, { status }),
+  updatePriority: (id, priority) => request('PUT', `/incidents/${id}/priority`, { priority }),
+  // location is { buildingId, floor, room } or null to clear it
+  updateLocation: (id, location) => request('PUT', `/incidents/${id}/location`, { location }),
 }
 
 export const messages = {

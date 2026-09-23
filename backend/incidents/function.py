@@ -6,6 +6,8 @@ Incidents service: tickets.
     GET  /api/incidents/{id}          one ticket
     PUT  /api/incidents/{id}/assign   assign an engineer (admin)
     PUT  /api/incidents/{id}/status   change the status (assignee or admin)
+    PUT  /api/incidents/{id}/priority change the priority (assignee or admin)
+    PUT  /api/incidents/{id}/location move the ticket to another place (admin)
 
 This file only decides which controller function handles the request. The
 rules live in controllers/, the SQL in models/, the JSON shape in views/.
@@ -54,6 +56,18 @@ def route(event):
     if len(segments) == 2 and segments[1] == "status":
         if method == "PUT":
             return incident_controller.update_status(event, incident_id)
+        return method_not_allowed(method)
+
+    # /api/incidents/{id}/priority
+    if len(segments) == 2 and segments[1] == "priority":
+        if method == "PUT":
+            return incident_controller.update_priority(event, incident_id)
+        return method_not_allowed(method)
+
+    # /api/incidents/{id}/location
+    if len(segments) == 2 and segments[1] == "location":
+        if method == "PUT":
+            return incident_controller.update_location(event, incident_id)
         return method_not_allowed(method)
 
     return not_found()

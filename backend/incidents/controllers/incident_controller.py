@@ -3,11 +3,12 @@ Incident controller: the rules for tickets.
 
 - Anyone signed in can file a ticket and see the tickets they filed.
 - Engineers and admins can see the tickets assigned to them.
-- Only admins can see all tickets and assign them.
-- The assigned engineer (or an admin) can change a ticket's status.
+- Only admins can see all tickets, assign them and change their location.
+- The assigned engineer (or an admin) can change a ticket's status and priority.
 
-Status and assignment changes also add a message to the ticket, so the
-thread shows the history and the change appears in other users' inboxes.
+Status, priority, assignment and location changes also add a message to the
+ticket, so the thread shows the history and the change appears in other
+users' inboxes.
 """
 
 import logging
@@ -51,17 +52,21 @@ def get_visible_incident(caller, incident_id):
     return incident
 
 
-def location_id_from_body(body):
+def location_from_body(body):
     """
-    Work out the location for a new ticket. Returns a location id or None.
+    Work out the location from a request body.
+
+    Returns (location_id, label). The label is text like "HQ, floor 3, room 12"
+    for messages people read. With no location both are (None, "no location").
 
     The request sends "location": {"buildingId": 2, "floor": 3, "room": 12}
-    (room optional), or leaves location out entirely. The building must
-    exist and the floor must be between 1 and that building's floor count.
+    (room optional), or leaves location out / sends null for no location.
+    The building must exist and the floor must be between 1 and that
+    building's floor count.
     """
     location = body.get("location")
     if location is None:
-        return None
+        return None, "no location"
     if not isinstance(location, dict):
         raise HttpError(400, "'location' must be an object")
 
@@ -73,7 +78,30 @@ def location_id_from_body(body):
     floor = validation.integer_in_range(location, "floor", 1, building["floors"])
     room = validation.optional_id(location, "room")  # a positive whole number, or absent
 
-    return location_model.find_or_create(building_id, floor, room)["id"]
+    label = f"{building['name']}, floor {floor}"
+    if room is not None:
+        label += f", room {room}"
+
+    return location_model.find_or_create(building_id, floor, room)["id"], label
+
+
+def get_incident_for_staff_change(caller, incident_id):
+    """
+    Load the basic ticket row for a status or priority change, or raise.
+
+    The caller must be staff. An engineer may only change tickets assigned to
+    them; admins may change any.
+    """
+    auth.require_role(caller, auth.STAFF_ROLES)
+
+    incident = incident_model.find_basic(incident_id)
+    if incident is None:
+        raise HttpError(404, "Incident not found")
+
+    if not auth.is_admin(caller) and incident["assigned_to"] != caller["id"]:
+        raise HttpError(403, "Access denied")
+
+    return incident
 
 
 def create_incident(event):
@@ -86,7 +114,7 @@ def create_incident(event):
     priority = validation.integer_in_range(
         body, "priority", incident_model.MIN_PRIORITY, incident_model.MAX_PRIORITY, default=3
     )
-    location_id = location_id_from_body(body)
+    location_id, _ = location_from_body(body)
 
     incident = incident_model.create(title, description, priority, location_id, caller["id"])
     logger.info("Incident %s filed by user %s", incident["id"], caller["id"])
@@ -177,18 +205,10 @@ def assign_incident(event, incident_id):
 def update_status(event, incident_id):
     """PUT /api/incidents/{id}/status - move the ticket along. Assignee or admin."""
     caller = auth.current_user(event)
-    auth.require_role(caller, auth.STAFF_ROLES)
+    incident = get_incident_for_staff_change(caller, incident_id)
 
     body = json_body(event)
     status = validation.one_of(body, "status", incident_model.STATUSES)
-
-    incident = incident_model.find_basic(incident_id)
-    if incident is None:
-        raise HttpError(404, "Incident not found")
-
-    # An engineer may only change tickets assigned to them. Admins may change any.
-    if not auth.is_admin(caller) and incident["assigned_to"] != caller["id"]:
-        raise HttpError(403, "Access denied")
 
     if incident["status"] == status:
         raise HttpError(400, f"Incident is already {status_label(status)}")
@@ -196,5 +216,47 @@ def update_status(event, incident_id):
     note = f"Ticket #{incident_id}: status changed to {status_label(status)}"
     incident = incident_model.update_status(incident_id, status, caller["id"], note)
     logger.info("Incident %s status changed to %s by %s", incident_id, status, caller["id"])
+    return ok(incident_view.serialize(incident))
+
+
+def update_priority(event, incident_id):
+    """PUT /api/incidents/{id}/priority - re-rank the ticket. Assignee or admin."""
+    caller = auth.current_user(event)
+    incident = get_incident_for_staff_change(caller, incident_id)
+
+    body = json_body(event)
+    priority = validation.integer_in_range(
+        body, "priority", incident_model.MIN_PRIORITY, incident_model.MAX_PRIORITY
+    )
+
+    if incident["priority"] == priority:
+        raise HttpError(400, f"Incident is already priority {priority}")
+
+    note = f"Ticket #{incident_id}: priority changed to {priority}"
+    incident = incident_model.update_priority(incident_id, priority, caller["id"], note)
+    logger.info("Incident %s priority changed to %s by %s", incident_id, priority, caller["id"])
+    return ok(incident_view.serialize(incident))
+
+
+def update_location(event, incident_id):
+    """PUT /api/incidents/{id}/location - move the ticket to another place. Admin only."""
+    caller = auth.current_user(event)
+    auth.require_role(caller, [auth.ROLE_ADMIN])
+
+    incident = incident_model.find_basic(incident_id)
+    if incident is None:
+        raise HttpError(404, "Incident not found")
+
+    body = json_body(event)
+    if "location" not in body:
+        raise HttpError(400, "'location' is required (use null to clear it)")
+    location_id, label = location_from_body(body)
+
+    if incident["location_id"] == location_id:
+        raise HttpError(400, "Incident already has that location")
+
+    note = f"Ticket #{incident_id}: location changed to {label}"
+    incident = incident_model.update_location(incident_id, location_id, caller["id"], note)
+    logger.info("Incident %s location changed to %s by %s", incident_id, location_id, caller["id"])
     return ok(incident_view.serialize(incident))
 

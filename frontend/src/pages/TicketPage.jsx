@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { inbox, incidents, messages, users } from '../services/api'
-import { STATUSES, formatDate, formatLocation, isAdmin, isStaff, label } from '../services/format'
+import { buildings, inbox, incidents, messages, users } from '../services/api'
+import { STATUSES, formatDate, formatLocation, isAdmin, isStaff, label, range } from '../services/format'
 import Alert from '../components/Alert'
 
 // One ticket: its details, the actions the user is allowed to take, and the
@@ -17,6 +17,12 @@ export default function TicketPage({ id, user, onBack, setUnread }) {
   const [staff, setStaff] = useState([]) // engineers and admins, for the assign dropdown
   const [assignee, setAssignee] = useState('')
   const [status, setStatus] = useState('')
+  const [priority, setPriority] = useState('')
+  // Location form (admin only): buildings for the dropdown, plus the chosen place
+  const [buildingList, setBuildingList] = useState([])
+  const [buildingId, setBuildingId] = useState('')
+  const [floor, setFloor] = useState('')
+  const [room, setRoom] = useState('')
   const [newMessage, setNewMessage] = useState('')
   const [actionError, setActionError] = useState('')
   const [busy, setBusy] = useState(false)
@@ -30,6 +36,12 @@ export default function TicketPage({ id, user, onBack, setUnread }) {
         setTicket(loadedTicket)
         setAssignee(loadedTicket.assignedTo ? String(loadedTicket.assignedTo.id) : '')
         setStatus(loadedTicket.status)
+        setPriority(String(loadedTicket.priority))
+        // Start the location form at the ticket's current place
+        const place = loadedTicket.location
+        setBuildingId(place ? String(place.building.id) : '')
+        setFloor(place ? String(place.floor) : '')
+        setRoom(place && place.room !== null ? String(place.room) : '')
         setThread(await messages.list(id))
 
         const read = await inbox.markRead(id)
@@ -43,11 +55,16 @@ export default function TicketPage({ id, user, onBack, setUnread }) {
     load()
   }, [id, refreshCount, setUnread])
 
-  // Admins need the list of engineers to assign tickets to.
+  // Admins need the list of engineers to assign tickets to, and the list of
+  // buildings to move tickets to.
   useEffect(() => {
     if (!isAdmin(user)) return
     users.list().then((all) => setStaff(all.filter(isStaff)))
+    buildings.list().then(setBuildingList).catch(() => {})
   }, [user])
+
+  // The building chosen in the location form, so we know how many floors to offer.
+  const chosenBuilding = buildingList.find((b) => String(b.id) === buildingId)
 
   // Run an action, then reload the ticket so the page shows the result.
   async function runAction(action) {
@@ -73,6 +90,24 @@ export default function TicketPage({ id, user, onBack, setUnread }) {
     runAction(() => incidents.updateStatus(id, status))
   }
 
+  function handlePriority(event) {
+    event.preventDefault()
+    runAction(() => incidents.updatePriority(id, Number(priority)))
+  }
+
+  function handleLocation(event) {
+    event.preventDefault()
+    // No building chosen means "clear the location"
+    const location = buildingId
+      ? {
+          buildingId: Number(buildingId),
+          floor: Number(floor),
+          room: room === '' ? undefined : Number(room),
+        }
+      : null
+    runAction(() => incidents.updateLocation(id, location))
+  }
+
   function handlePost(event) {
     event.preventDefault()
     runAction(async () => {
@@ -94,8 +129,17 @@ export default function TicketPage({ id, user, onBack, setUnread }) {
 
   // The backend checks these too; this just hides buttons that would fail.
   const canAssign = isAdmin(user)
+  const canChangeLocation = isAdmin(user)
+  // The assigned engineer, or any admin, can change status and priority
   const canChangeStatus = isAdmin(user) || (ticket.assignedTo && ticket.assignedTo.id === user.id)
   const isClosed = ticket.status === 'closed'
+
+  // True when the location form matches what the ticket already has
+  const place = ticket.location
+  const locationUnchanged =
+    buildingId === (place ? String(place.building.id) : '') &&
+    floor === (place ? String(place.floor) : '') &&
+    room === (place && place.room !== null ? String(place.room) : '')
 
   return (
     <div>
@@ -164,6 +208,70 @@ export default function TicketPage({ id, user, onBack, setUnread }) {
               </label>
               <button type="submit" disabled={busy || status === ticket.status}>
                 Update status
+              </button>
+            </form>
+          )}
+
+          {canChangeStatus && (
+            <form onSubmit={handlePriority} className="row">
+              <label>
+                Priority (1 = most urgent)
+                <select value={priority} onChange={(e) => setPriority(e.target.value)}>
+                  {range(5).map((n) => (
+                    <option key={n} value={n}>{n}</option>
+                  ))}
+                </select>
+              </label>
+              <button type="submit" disabled={busy || Number(priority) === ticket.priority}>
+                Update priority
+              </button>
+            </form>
+          )}
+
+          {canChangeLocation && (
+            <form onSubmit={handleLocation} className="row">
+              <label>
+                Building
+                <select
+                  value={buildingId}
+                  onChange={(e) => {
+                    setBuildingId(e.target.value)
+                    setFloor('') // the floor list changes with the building
+                    setRoom('')
+                  }}
+                >
+                  <option value="">No location</option>
+                  {buildingList.map((b) => (
+                    <option key={b.id} value={b.id}>{b.name}</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Floor
+                <select
+                  value={floor}
+                  onChange={(e) => setFloor(e.target.value)}
+                  disabled={!chosenBuilding}
+                  required={!!chosenBuilding}
+                >
+                  <option value="">Choose…</option>
+                  {chosenBuilding && range(chosenBuilding.floors).map((n) => (
+                    <option key={n} value={n}>{n}</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Room (optional)
+                <input
+                  type="number"
+                  min="1"
+                  value={room}
+                  onChange={(e) => setRoom(e.target.value)}
+                  disabled={!chosenBuilding}
+                />
+              </label>
+              <button type="submit" disabled={busy || locationUnchanged}>
+                Update location
               </button>
             </form>
           )}

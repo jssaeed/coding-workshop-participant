@@ -290,6 +290,38 @@ Also posts a message on the ticket, from the caller, in the same transaction:
 
 Errors: `400` unknown status, or the ticket is already in that status · `403` an engineer who is not assigned to this ticket · `404` no such ticket.
 
+### `PUT /api/incidents/{id}/priority` — change priority
+
+The assigned engineer, or any admin.
+
+```json
+{ "priority": 1 }
+```
+
+Also posts a message on the ticket, from the caller, in the same transaction:
+
+> Ticket #12: priority changed to 1
+
+`200` → the ticket.
+
+Errors: `400` priority missing or outside 1–5, or the ticket already has that priority · `403` an engineer who is not assigned to this ticket · `404` no such ticket.
+
+### `PUT /api/incidents/{id}/location` — move the ticket
+
+Admin only. Same `location` shape as when filing a ticket; send `"location": null` to clear it.
+
+```json
+{ "location": { "buildingId": 1, "floor": 4, "room": 7 } }
+```
+
+Also posts a message on the ticket, from the caller, in the same transaction:
+
+> Ticket #12: location changed to HQ, floor 4, room 7
+
+`200` → the ticket.
+
+Errors: `400` `location` key missing, unknown `buildingId`, floor outside the building's range, non-numeric room, or the ticket already has that location · `403` not an admin · `404` no such ticket.
+
 ---
 
 ## Messages — `/api/messages`
