@@ -2,7 +2,9 @@
 Users service: accounts, login and roles.
 
     POST   /api/users            sign up (always creates an employee)
-    POST   /api/users/login      log in, returns a token
+    POST   /api/users/login      log in, returns access + refresh tokens
+    POST   /api/users/refresh    swap a refresh token for new tokens
+    POST   /api/users/logout     revoke a refresh token
     GET    /api/users/me         the signed-in user
     GET    /api/users            list accounts (admin)
     PUT    /api/users/{id}/role  change a role (admin)
@@ -41,6 +43,18 @@ def route(event):
     if segments == ["login"]:
         if method == "POST":
             return user_controller.login(event)
+        return method_not_allowed(method)
+
+    # /api/users/refresh
+    if segments == ["refresh"]:
+        if method == "POST":
+            return user_controller.refresh(event)
+        return method_not_allowed(method)
+
+    # /api/users/logout
+    if segments == ["logout"]:
+        if method == "POST":
+            return user_controller.logout(event)
         return method_not_allowed(method)
 
     # /api/users/me

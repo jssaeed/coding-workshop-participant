@@ -30,7 +30,7 @@ export default function UsersPage({ user }) {
     setSuccess('')
     try {
       await users.updateRole(target.id, role)
-      setSuccess(`${target.name} is now ${label(role)}. They will see the change after signing in again.`)
+      setSuccess(`${target.name} is now ${label(role)}.`)
       setRefreshCount(refreshCount + 1)
     } catch (err) {
       setError(err.message)

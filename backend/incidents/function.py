@@ -3,7 +3,6 @@ Incidents service: tickets.
 
     POST /api/incidents               file a ticket
     GET  /api/incidents               list tickets (?scope=mine|assigned|unassigned|all)
-    GET  /api/incidents/locations     known buildings, floors and rooms
     GET  /api/incidents/{id}          one ticket
     PUT  /api/incidents/{id}/assign   assign an engineer (admin)
     PUT  /api/incidents/{id}/status   change the status (assignee or admin)
@@ -35,12 +34,6 @@ def route(event):
             return incident_controller.create_incident(event)
         if method == "GET":
             return incident_controller.list_incidents(event)
-        return method_not_allowed(method)
-
-    # /api/incidents/locations
-    if segments == ["locations"]:
-        if method == "GET":
-            return incident_controller.list_locations(event)
         return method_not_allowed(method)
 
     incident_id = path_id(segments)

@@ -1,44 +1,33 @@
 """
 Location model: the SQL for the locations table.
 
-Locations are shared between tickets: two tickets in the same room point at
-the same location row.
+A location is one exact place (building, floor, optional room). Locations
+are shared: every ticket reported in the same place points at the same row.
 """
 
-from lib.database import execute, fetch_all, fetch_one
+from lib.database import execute, fetch_one
+
+COLUMNS = "id, building_id, floor, room"
 
 
-def find_by_id(location_id):
-    return fetch_one(
-        "SELECT id, building, floor, room FROM locations WHERE id = %s",
-        (location_id,),
-    )
-
-
-def find_or_create(building, floor, room):
+def find_or_create(building_id, floor, room):
     """Return the location for this place, adding it if it is new."""
     existing = fetch_one(
-        """
-        SELECT id, building, floor, room
+        f"""
+        SELECT {COLUMNS}
         FROM locations
-        WHERE building = %s AND floor = %s AND room = %s
+        WHERE building_id = %s AND floor = %s AND room IS NOT DISTINCT FROM %s
         """,
-        (building, floor, room),
+        (building_id, floor, room),
     )
     if existing is not None:
         return existing
 
     return execute(
-        """
-        INSERT INTO locations (building, floor, room)
+        f"""
+        INSERT INTO locations (building_id, floor, room)
         VALUES (%s, %s, %s)
-        RETURNING id, building, floor, room
+        RETURNING {COLUMNS}
         """,
-        (building, floor, room),
-    )
-
-
-def list_all():
-    return fetch_all(
-        "SELECT id, building, floor, room FROM locations ORDER BY building, floor, room"
+        (building_id, floor, room),
     )

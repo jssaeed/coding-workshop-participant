@@ -17,9 +17,16 @@ export function formatDate(isoString) {
 
 export function formatLocation(location) {
   if (!location) return '—'
-  let text = `${location.building}, floor ${location.floor}`
-  if (location.room) text += `, ${location.room}`
+  let text = `${location.building.name}, floor ${location.floor}`
+  if (location.room) text += `, room ${location.room}`
   return text
+}
+
+// [1, 2, ..., n] for the floor dropdown
+export function range(n) {
+  const numbers = []
+  for (let i = 1; i <= n; i++) numbers.push(i)
+  return numbers
 }
 
 export function isAdmin(user) {

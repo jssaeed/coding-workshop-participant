@@ -20,11 +20,12 @@ MAX_PRIORITY = 5
 SELECT_INCIDENT = """
     SELECT i.id, i.title, i.description, i.status, i.priority,
            i.created_at, i.updated_at, i.resolved_at,
-           i.location_id, l.building, l.floor, l.room,
+           i.location_id, l.floor, l.room, b.id AS building_id, b.name AS building_name,
            i.reported_by, reporter.name AS reporter_name, reporter.email AS reporter_email,
            i.assigned_to, assignee.name AS assignee_name, assignee.email AS assignee_email
     FROM incidents i
     LEFT JOIN locations l ON l.id = i.location_id
+    LEFT JOIN buildings b ON b.id = l.building_id
     JOIN users reporter ON reporter.id = i.reported_by
     LEFT JOIN users assignee ON assignee.id = i.assigned_to
 """

@@ -5,22 +5,33 @@ Who is calling, and what are they allowed to do. Shared by every service.
 How login works:
   1. At signup the password is hashed with bcrypt and only the hash is stored.
   2. At login the password is checked against the hash. If it matches, the
-     user gets a token (a JWT) that contains their id and role, signed with
-     a secret key so it cannot be forged.
-  3. Every other request sends the token in the "Authorization: Bearer ..."
-     header. current_user() checks the signature and reads the user out.
+     user gets two tokens:
+       - an ACCESS token: a JWT with the user's id and role, signed with a
+         secret key so it cannot be forged. Short-lived (15 minutes). Sent
+         on every request in the "Authorization: Bearer ..." header.
+       - a REFRESH token: a long random string (14 days). Sent only to
+         POST /users/refresh to get a new access token when the old one
+         expires. Stored hashed in the refresh_tokens table so it can be
+         revoked (logout, demotion).
+  3. current_user() checks the access token's signature to learn WHO is
+     calling, then reads the user's CURRENT role from the database. The role
+     inside the token is a hint for the frontend; permission decisions use
+     the database, so a role change takes effect on the very next request.
 
 The signing secret comes from the JWT_SECRET environment variable, which
 Terraform sets on every Lambda so they all accept each other's tokens.
 """
 
+import hashlib
 import logging
 import os
+import secrets
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
 import jwt
 
+from .database import fetch_one
 from .request import headers
 from .responses import HttpError
 
@@ -36,14 +47,18 @@ ALL_ROLES = [ROLE_ADMIN, ROLE_ENGINEER, ROLE_EMPLOYEE]
 # Roles that work on tickets (can be assigned, can change status).
 STAFF_ROLES = [ROLE_ADMIN, ROLE_ENGINEER]
 
-TOKEN_LIFETIME = timedelta(hours=12)
+# Higher number = more power. Used to tell a promotion from a demotion.
+ROLE_RANK = {ROLE_EMPLOYEE: 0, ROLE_ENGINEER: 1, ROLE_ADMIN: 2}
+
+ACCESS_TOKEN_LIFETIME = timedelta(minutes=15)
+REFRESH_TOKEN_LIFETIME = timedelta(days=14)
 
 # Only used locally when JWT_SECRET is missing, so a fresh checkout just works.
 LOCAL_DEV_SECRET = "local-dev-secret-not-for-cloud"
 
 
 def get_secret():
-    """The key used to sign tokens."""
+    """The key used to sign access tokens."""
     secret = os.getenv("JWT_SECRET", "").strip()
     if secret:
         return secret
@@ -70,27 +85,32 @@ def check_password(password, password_hash):
         return False  # the stored hash is damaged; treat as no match
 
 
-# --- tokens ----------------------------------------------------------------
+# --- access tokens (JWT) ---------------------------------------------------
 
-def create_token(user):
-    """Make a signed token for a user row (needs id, email and role)."""
+def create_access_token(user):
+    """Make a signed, short-lived token for a user row (needs id, email, role)."""
     now = datetime.now(timezone.utc)
     claims = {
         "sub": str(user["id"]),  # "subject": who the token is for
         "email": user["email"],
         "role": user["role"],
         "iat": now,  # issued at
-        "exp": now + TOKEN_LIFETIME,  # expires
+        "exp": now + ACCESS_TOKEN_LIFETIME,  # expires
     }
     return jwt.encode(claims, get_secret(), algorithm="HS256")
 
 
 def current_user(event):
     """
-    Read the caller out of the Authorization header.
+    Identify the caller and load their current role.
 
-    Returns a dict with id, email and role. Raises 401 if there is no token
-    or the token is invalid or expired.
+    Step 1: the Authorization header must carry a valid, unexpired access
+            token. That proves WHO is calling.
+    Step 2: the user's role is read from the database, not from the token,
+            so a promotion or demotion applies immediately. A missing row
+            means the account was deleted.
+
+    Returns a dict with id, email and role. Raises 401 on any failure.
     """
     authorization = headers(event).get("authorization", "")
     if not authorization.lower().startswith("bearer "):
@@ -104,11 +124,33 @@ def current_user(event):
     except jwt.InvalidTokenError:
         raise HttpError(401, "Token is invalid")
 
-    return {
-        "id": int(claims["sub"]),
-        "email": claims["email"],
-        "role": claims["role"],
-    }
+    user = fetch_one(
+        "SELECT id, email, role FROM users WHERE id = %s",
+        (int(claims["sub"]),),
+    )
+    if user is None:
+        raise HttpError(401, "Account no longer exists")
+
+    return {"id": user["id"], "email": user["email"], "role": user["role"]}
+
+
+# --- refresh tokens --------------------------------------------------------
+
+def create_refresh_token():
+    """
+    Make a new refresh token.
+
+    Returns (token, token_hash, expires_at). The token goes to the client;
+    only the hash is stored, the same way passwords are handled.
+    """
+    token = secrets.token_urlsafe(32)
+    expires_at = datetime.now(timezone.utc) + REFRESH_TOKEN_LIFETIME
+    return token, hash_refresh_token(token), expires_at
+
+
+def hash_refresh_token(token):
+    """SHA-256 of a refresh token, for storing and looking it up."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 # --- roles -----------------------------------------------------------------
@@ -125,3 +167,8 @@ def is_admin(user):
 
 def is_staff(user):
     return user["role"] in STAFF_ROLES
+
+
+def is_demotion(old_role, new_role):
+    """True when the change takes power away (used to revoke refresh tokens)."""
+    return ROLE_RANK[new_role] < ROLE_RANK[old_role]

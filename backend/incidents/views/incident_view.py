@@ -12,10 +12,9 @@ def serialize(row):
     else:
         location = {
             "id": row["location_id"],
-            "building": row["building"],
+            "building": {"id": row["building_id"], "name": row["building_name"]},
             "floor": row["floor"],
-            # Stored as '' when not given; the API says null instead.
-            "room": row["room"] or None,
+            "room": row["room"],  # null when no room was given
         }
 
     if row["assigned_to"] is None:
@@ -49,11 +48,3 @@ def serialize(row):
 def serialize_many(rows):
     return [serialize(row) for row in rows]
 
-
-def serialize_location(row):
-    return {
-        "id": row["id"],
-        "building": row["building"],
-        "floor": row["floor"],
-        "room": row["room"] or None,
-    }

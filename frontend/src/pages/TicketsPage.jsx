@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { incidents } from '../services/api'
-import { STATUSES, formatDate, formatLocation, isAdmin, isStaff, label } from '../services/format'
+import { buildings, incidents } from '../services/api'
+import { STATUSES, formatDate, formatLocation, isAdmin, isStaff, label, range } from '../services/format'
 import Alert from '../components/Alert'
 
 // The ticket list, with filters and a form to file a new ticket.
@@ -22,11 +22,20 @@ export default function TicketsPage({ user, onOpen }) {
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
   const [newPriority, setNewPriority] = useState(3)
-  const [building, setBuilding] = useState('')
+  const [buildingList, setBuildingList] = useState([]) // for the dropdown
+  const [buildingId, setBuildingId] = useState('')
   const [floor, setFloor] = useState('')
   const [room, setRoom] = useState('')
   const [formError, setFormError] = useState('')
   const [saving, setSaving] = useState(false)
+
+  // Load the buildings once, for the location dropdowns.
+  useEffect(() => {
+    buildings.list().then(setBuildingList).catch(() => {})
+  }, [])
+
+  // The building chosen in the form, so we know how many floors to offer.
+  const chosenBuilding = buildingList.find((b) => String(b.id) === buildingId)
 
   // Load the list whenever a filter changes or Refresh is clicked.
   useEffect(() => {
@@ -50,8 +59,12 @@ export default function TicketsPage({ user, onOpen }) {
     setSaving(true)
     try {
       const ticket = { title, description, priority: Number(newPriority) }
-      if (building.trim()) {
-        ticket.location = { building, floor, room }
+      if (buildingId) {
+        ticket.location = {
+          buildingId: Number(buildingId),
+          floor: Number(floor),
+          room: room === '' ? undefined : Number(room),
+        }
       }
       const created = await incidents.create(ticket)
       onOpen(created.id)
@@ -100,17 +113,47 @@ export default function TicketsPage({ user, onOpen }) {
           <div className="row">
             <label>
               Building
-              <input value={building} onChange={(e) => setBuilding(e.target.value)} />
+              <select
+                value={buildingId}
+                onChange={(e) => {
+                  setBuildingId(e.target.value)
+                  setFloor('') // the floor list changes with the building
+                }}
+              >
+                <option value="">No location</option>
+                {buildingList.map((b) => (
+                  <option key={b.id} value={b.id}>{b.name}</option>
+                ))}
+              </select>
             </label>
             <label>
               Floor
-              <input value={floor} onChange={(e) => setFloor(e.target.value)} required={building !== ''} />
+              <select
+                value={floor}
+                onChange={(e) => setFloor(e.target.value)}
+                disabled={!chosenBuilding}
+                required={!!chosenBuilding}
+              >
+                <option value="">Choose…</option>
+                {chosenBuilding && range(chosenBuilding.floors).map((n) => (
+                  <option key={n} value={n}>{n}</option>
+                ))}
+              </select>
             </label>
             <label>
-              Room (optional)
-              <input value={room} onChange={(e) => setRoom(e.target.value)} />
+              Room number (optional)
+              <input
+                type="number"
+                min="1"
+                value={room}
+                onChange={(e) => setRoom(e.target.value)}
+                disabled={!chosenBuilding}
+              />
             </label>
           </div>
+          {buildingList.length === 0 && (
+            <p className="muted">No buildings defined yet. An admin can add them on the Buildings page.</p>
+          )}
           <Alert error={formError} />
           <button type="submit" disabled={saving}>File ticket</button>
         </form>

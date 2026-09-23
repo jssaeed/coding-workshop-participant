@@ -1,6 +1,6 @@
 # Incident Tracker API
 
-Five Lambda services behind `/api/`: `users`, `incidents`, `messages`, `inbox`, and `migrations`. All requests and responses are JSON.
+Six Lambda services behind `/api/`: `users`, `buildings`, `incidents`, `messages`, `inbox`, and `migrations`. All requests and responses are JSON.
 
 | Environment | Base URL |
 | --- | --- |
@@ -11,7 +11,7 @@ Five Lambda services behind `/api/`: `users`, `incidents`, `messages`, `inbox`, 
 
 1. Start the environment: `./bin/start-dev.sh`
 2. Create the tables: `curl -X POST http://localhost:3001/api/migrations`
-3. Sign up your first user (see `POST /api/users`), then make them an admin directly in the database — signup only ever creates employees, and only an admin can promote:
+3. Sign up your first user (see `POST /api/users`), then make them an admin directly in the database — signup only ever creates employees, and only an admin can promote. The change takes effect on their next request; no need to sign out:
    ```sh
    psql -h localhost -U postgres -c "UPDATE users SET role = 'facility_admin' WHERE email = 'you@acme.inc'"
    ```
@@ -21,15 +21,16 @@ Shared code lives in `backend/_shared/` and is copied into each service's `lib/`
 
 ## Authentication
 
-Log in to get a token, then send it on every other request:
+Log in to get two tokens:
 
-```
-Authorization: Bearer <token>
-```
+- an **access token** (a JWT, valid 15 minutes) — send it on every other request as `Authorization: Bearer <token>`
+- a **refresh token** (valid 14 days) — send it only to `POST /api/users/refresh` to get a new pair when the access token expires. Each refresh token works exactly once; the response contains its replacement.
 
-Tokens expire after 12 hours; log in again to get a new one. There is no refresh endpoint.
+Expired and revoked refresh tokens are deleted automatically on every login, so the table stays small.
 
-A missing, malformed, or expired token returns `401`. A valid token for a role that is not allowed to do something returns `403`.
+The access token carries the user's id and role, but the role is only a hint for the client. Every service verifies the token's signature to learn **who** is calling, then reads the user's **current** role from the database. A promotion or demotion therefore applies on the very next request, without a new login. Demoting a user also revokes their refresh tokens, so their session ends when the current access token expires.
+
+A missing, malformed, or expired access token returns `401` (with `"Token has expired"` for the expired case, so clients know to refresh). A valid token for a role that is not allowed to do something returns `403`.
 
 ### Roles
 
@@ -96,10 +97,33 @@ Public.
 `200` →
 ```json
 { "user": { "id": 1, "email": "ana@acme.inc", "name": "Ana", "role": "employee", "...": "..." },
-  "token": "eyJhbGciOi..." }
+  "token": "eyJhbGciOi...",
+  "refreshToken": "Kq9c2m..." }
 ```
 
 Errors: `401` wrong email or password (same message for both, deliberately).
+
+### `POST /api/users/refresh` — get a new access token
+
+Public (the refresh token is the credential).
+
+```json
+{ "refreshToken": "Kq9c2m..." }
+```
+
+`200` → the same shape as login: `user`, a new `token`, and a new `refreshToken`. The one you sent is revoked; use the new one next time. The new access token reflects the user's current role.
+
+Errors: `400` missing refresh token · `401` unknown, already-used, expired, or revoked refresh token — sign in again.
+
+### `POST /api/users/logout` — end a session
+
+Public. Revokes the given refresh token so it cannot be used again. The client should also discard its access token.
+
+```json
+{ "refreshToken": "Kq9c2m..." }
+```
+
+`204`.
 
 ### `GET /api/users/me` — the signed-in user
 
@@ -119,7 +143,7 @@ Admin only.
 { "role": "engineer" }
 ```
 
-`role` is one of `employee`, `engineer`, `facility_admin`. `200` → the updated user.
+`role` is one of `employee`, `engineer`, `facility_admin`. `200` → the updated user. The change applies to the user's next request immediately. If the change is a demotion, the user's refresh tokens are revoked as well.
 
 Errors: `400` unknown role · `403` an admin changing their own role · `404` no such user.
 
@@ -128,6 +152,46 @@ Errors: `400` unknown role · `403` an admin changing their own role · `404` no
 Admin only. `204` on success.
 
 Errors: `403` deleting your own account · `404` no such user · `409` the user has reported tickets or written messages — that history is kept, so the account cannot be removed.
+
+---
+
+## Buildings — `/api/buildings`
+
+The places tickets can be reported in. A facility admin defines each building with a name and how many floors it has; the ticket form then offers buildings and floors as dropdowns instead of free text.
+
+### Building object
+
+```json
+{ "id": 2, "name": "HQ", "floors": 5, "createdAt": "...", "updatedAt": "..." }
+```
+
+### `GET /api/buildings` — list buildings
+
+Any signed-in user. `200` → array, alphabetical by name.
+
+### `POST /api/buildings` — add a building
+
+Admin only.
+
+```json
+{ "name": "HQ", "floors": 5 }
+```
+
+`floors` is 1–200. `201` → the building. Errors: `400` blank name or floors out of range · `409` a building with that name (any case) already exists.
+
+### `PUT /api/buildings/{id}` — rename or change floor count
+
+Admin only. Send either or both fields:
+
+```json
+{ "floors": 6 }
+```
+
+`200` → the building. Errors: `400` floors below a floor that a ticket already uses (the message says which) · `404` no such building · `409` name taken.
+
+### `DELETE /api/buildings/{id}` — remove a building
+
+Admin only. `204`. Errors: `404` no such building · `409` tickets are located in it.
 
 ---
 
@@ -142,7 +206,7 @@ Errors: `403` deleting your own account · `404` no such user · `409` the user 
   "description": "Under the sink in the 3rd floor kitchen",
   "status": "in_progress",
   "priority": 2,
-  "location": { "id": 1, "building": "HQ", "floor": "3", "room": "Kitchen" },
+  "location": { "id": 1, "building": { "id": 2, "name": "HQ" }, "floor": 3, "room": 12 },
   "reportedBy": { "id": 4, "name": "Ana", "email": "ana@acme.inc" },
   "assignedTo": { "id": 7, "name": "Bob", "email": "bob@example.com" },
   "createdAt": "2026-09-22T14:10:02.101Z",
@@ -153,7 +217,7 @@ Errors: `403` deleting your own account · `404` no such user · `409` the user 
 
 - `status`: `open` → `in_progress` → `blocked` / `resolved` → `closed`. New tickets are `open`.
 - `priority`: `1` (most urgent) to `5`. Defaults to `3`.
-- `location`, `assignedTo`, `resolvedAt`, and `location.room` are `null` when not set.
+- `location`, `assignedTo`, `resolvedAt`, and `location.room` are `null` when not set. `floor` and `room` are numbers.
 - `resolvedAt` is stamped automatically when status becomes `resolved` or `closed`, and cleared if the ticket is reopened.
 
 ### `POST /api/incidents` — file a ticket
@@ -165,15 +229,15 @@ Any signed-in user. The reporter is taken from the token.
   "title": "Leaking pipe",
   "description": "optional",
   "priority": 2,
-  "location": { "building": "HQ", "floor": "3", "room": "Kitchen" }
+  "location": { "buildingId": 2, "floor": 3, "room": 12 }
 }
 ```
 
-`location` is optional. Pass either an object (an existing matching location is reused; `room` is optional) or `"locationId": 1` for a known one.
+`location` is optional. `buildingId` must be a building from `GET /api/buildings`; `floor` must be between 1 and that building's `floors`; `room` is an optional positive number. The same place is stored once and reused by every ticket reported there.
 
 `201` → the ticket.
 
-Errors: `400` missing title, priority outside 1–5, location missing building or floor, unknown `locationId`.
+Errors: `400` missing title, priority outside 1–5, unknown `buildingId`, floor outside the building's range, non-numeric room.
 
 ### `GET /api/incidents` — list tickets
 
@@ -187,12 +251,6 @@ Errors: `400` missing title, priority outside 1–5, location missing building o
 Add `?status=` and/or `?priority=` to filter (not combined with `unassigned`). Sorted most urgent first, then newest.
 
 `200` → array of tickets. `403` for a scope your role can't use.
-
-### `GET /api/incidents/locations` — known locations
-
-Any signed-in user. For the report-a-ticket form.
-
-`200` → `[{ "id": 1, "building": "HQ", "floor": "3", "room": "Kitchen" }, ...]`
 
 ### `GET /api/incidents/{id}` — one ticket
 
@@ -321,7 +379,7 @@ Creates any missing database tables. The schema is the `SCHEMA` list at the top 
 
 | Method | Does |
 | --- | --- |
-| `POST` | Apply the schema. `200` → `{ "message": "Schema applied", "tables": ["users", "locations", "incidents", "messages", "ticket_reads"] }` |
+| `POST` | Apply the schema. `200` → `{ "message": "Schema applied", "tables": ["users", "buildings", "locations", "incidents", "messages", "refresh_tokens", "ticket_reads"] }` |
 | `GET` | Report which tables exist. `200` → `{ "tables": [...], "missing": [...] }` |
 
 This endpoint is currently unauthenticated. It only ever creates — nothing is dropped — but add a shared-secret check before exposing it outside the workshop.
@@ -342,9 +400,9 @@ curl -s -X POST $API/api/users -H 'Content-Type: application/json' \
 TOKEN=$(curl -s -X POST $API/api/users/login -H 'Content-Type: application/json' \
   -d '{"email":"ana@acme.inc","password":"hunter22!"}' | jq -r .token)
 
-# File a ticket
+# File a ticket (buildingId from GET /api/buildings, which an admin populates first)
 curl -s -X POST $API/api/incidents -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"title":"Leaking pipe","priority":2,"location":{"building":"HQ","floor":"3"}}'
+  -d '{"title":"Leaking pipe","priority":2,"location":{"buildingId":1,"floor":3,"room":12}}'
 
 # See your tickets
 curl -s $API/api/incidents -H "Authorization: Bearer $TOKEN"

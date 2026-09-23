@@ -15,6 +15,7 @@ import logging
 from lib import auth, validation
 from lib.request import json_body, query_params
 from lib.responses import HttpError, created, ok
+from models import building as building_model
 from models import incident as incident_model
 from models import location as location_model
 from models import user as user_model
@@ -54,25 +55,25 @@ def location_id_from_body(body):
     """
     Work out the location for a new ticket. Returns a location id or None.
 
-    The request can send either "locationId": 5 (an existing location) or
-    "location": {"building": ..., "floor": ..., "room": ...}, or neither.
+    The request sends "location": {"buildingId": 2, "floor": 3, "room": 12}
+    (room optional), or leaves location out entirely. The building must
+    exist and the floor must be between 1 and that building's floor count.
     """
-    location_id = validation.optional_id(body, "locationId")
-    if location_id is not None:
-        if location_model.find_by_id(location_id) is None:
-            raise HttpError(400, "'locationId' does not match a known location")
-        return location_id
-
     location = body.get("location")
     if location is None:
         return None
     if not isinstance(location, dict):
         raise HttpError(400, "'location' must be an object")
 
-    building = validation.required_string(location, "building", max_length=255)
-    floor = validation.required_string(location, "floor", max_length=64)
-    room = validation.optional_string(location, "room", max_length=64)
-    return location_model.find_or_create(building, floor, room)["id"]
+    building_id = validation.required_id(location, "buildingId")
+    building = building_model.find_by_id(building_id)
+    if building is None:
+        raise HttpError(400, "'buildingId' does not match a known building")
+
+    floor = validation.integer_in_range(location, "floor", 1, building["floors"])
+    room = validation.optional_id(location, "room")  # a positive whole number, or absent
+
+    return location_model.find_or_create(building_id, floor, room)["id"]
 
 
 def create_incident(event):
@@ -197,9 +198,3 @@ def update_status(event, incident_id):
     logger.info("Incident %s status changed to %s by %s", incident_id, status, caller["id"])
     return ok(incident_view.serialize(incident))
 
-
-def list_locations(event):
-    """GET /api/incidents/locations - every known location."""
-    auth.current_user(event)
-    locations = location_model.list_all()
-    return ok([incident_view.serialize_location(row) for row in locations])

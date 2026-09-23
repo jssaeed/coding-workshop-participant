@@ -31,7 +31,7 @@ export default function LoginPage({ onLogin }) {
         await users.signup(email, password, name)
       }
       const result = await users.login(email, password)
-      onLogin(result.user, result.token)
+      onLogin(result.user, result.token, result.refreshToken)
     } catch (err) {
       setError(err.message)
     } finally {

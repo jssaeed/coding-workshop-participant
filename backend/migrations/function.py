@@ -63,21 +63,38 @@ SCHEMA = [
     )
     """,
 
-    # --- locations -------------------------------------------------------
-    # Where an incident happened. "room" is stored as '' instead of NULL when
-    # not given, because UNIQUE treats every NULL as different and would then
-    # allow the same building + floor to be added many times.
+    # --- buildings -------------------------------------------------------
+    # Defined by a facility admin: a name and how many floors it has. The
+    # ticket form offers these as a dropdown, and floors 1..floors as another.
     """
-    CREATE TABLE IF NOT EXISTS locations (
+    CREATE TABLE IF NOT EXISTS buildings (
         id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-        building   TEXT        NOT NULL CHECK (building <> ''),
-        floor      TEXT        NOT NULL CHECK (floor <> ''),
-        room       TEXT        NOT NULL DEFAULT '',
+        name       TEXT        NOT NULL UNIQUE CHECK (name <> ''),
+        floors     SMALLINT    NOT NULL CHECK (floors BETWEEN 1 AND 200),
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        UNIQUE (building, floor, room)
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
     """,
+
+    # --- locations -------------------------------------------------------
+    # One exact place: a building, a floor on it, and optionally a room.
+    # Tickets point at a location row, and the same place is reused by
+    # every ticket reported there.
+    # "UNIQUE NULLS NOT DISTINCT" makes two rows with room = NULL count as
+    # the same place (plain UNIQUE would treat every NULL as different).
+    # The floor number is checked against the building's floor count in the
+    # incidents service, because a CHECK cannot look at another table.
+    """
+    CREATE TABLE IF NOT EXISTS locations (
+        id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        building_id BIGINT      NOT NULL REFERENCES buildings (id) ON DELETE RESTRICT,
+        floor       SMALLINT    NOT NULL CHECK (floor >= 1),
+        room        INTEGER     CHECK (room >= 1),
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE NULLS NOT DISTINCT (building_id, floor, room)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS locations_building_id_idx ON locations (building_id)",
 
     # --- incidents -------------------------------------------------------
     # A ticket. reported_by is who filed it, assigned_to is the engineer
@@ -120,6 +137,24 @@ SCHEMA = [
     """,
     "CREATE INDEX IF NOT EXISTS messages_incident_id_idx ON messages (incident_id)",
 
+    # --- refresh_tokens --------------------------------------------------
+    # Long-lived tokens that can be exchanged for a new short-lived access
+    # token (see lib/auth.py). Only the SHA-256 hash is stored, so a copy of
+    # the database cannot be used to log in as anyone. revoked_at is set when
+    # a token is used (it is replaced by a new one), on logout, or when the
+    # user is demoted.
+    """
+    CREATE TABLE IF NOT EXISTS refresh_tokens (
+        id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        user_id    BIGINT      NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+        token_hash TEXT        NOT NULL UNIQUE,
+        expires_at TIMESTAMPTZ NOT NULL,
+        revoked_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS refresh_tokens_user_id_idx ON refresh_tokens (user_id)",
+
     # --- ticket_reads ----------------------------------------------------
     # Remembers when each user last looked at each ticket. The inbox uses it:
     # a message is "unread" if it is newer than the user's last_read_at for
@@ -147,16 +182,69 @@ SCHEMA = [
 ]
 
 # The tables the schema above creates. GET uses this to report what is missing.
-TABLES = ["users", "locations", "incidents", "messages", "ticket_reads"]
+TABLES = ["users", "buildings", "locations", "incidents", "messages", "refresh_tokens", "ticket_reads"]
 
 
 def apply_schema():
     """Run every statement in SCHEMA, in order, and save the result."""
     connection = get_connection()
     with connection.cursor() as cursor:
+        replace_old_locations_table(cursor)
         for statement in SCHEMA:
             cursor.execute(statement)
+        restore_incident_location_link(cursor)
     connection.commit()
+
+
+# ---------------------------------------------------------------------------
+# Upgrading databases created by an earlier version
+# ---------------------------------------------------------------------------
+#
+# An earlier version of the locations table stored building and floor as
+# free text. The table now points at the buildings table instead, and a
+# table's shape cannot be changed with CREATE TABLE IF NOT EXISTS. So, if the
+# old shape is found, the old table is removed before SCHEMA runs (which then
+# creates the new one). Tickets keep everything except their old location.
+#
+# Both functions do nothing on a database that is already up to date, and on
+# a brand-new project they would not exist at all.
+
+def replace_old_locations_table(cursor):
+    """Drop the old free-text locations table if it is still there."""
+    cursor.execute(
+        """
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'locations'
+          AND column_name = 'building'
+        """
+    )
+    if cursor.fetchone() is None:
+        return  # already the new shape (or no table yet)
+
+    logger.info("Old locations table found; replacing it")
+    cursor.execute("UPDATE incidents SET location_id = NULL")
+    # CASCADE also removes the foreign key from incidents to this table;
+    # restore_incident_location_link() puts it back on the new table.
+    cursor.execute("DROP TABLE locations CASCADE")
+
+
+def restore_incident_location_link(cursor):
+    """Re-add incidents.location_id -> locations(id) if it is missing."""
+    cursor.execute(
+        "SELECT 1 FROM pg_constraint WHERE conname = 'incidents_location_id_fkey'"
+    )
+    if cursor.fetchone() is not None:
+        return
+
+    cursor.execute(
+        """
+        ALTER TABLE incidents
+        ADD CONSTRAINT incidents_location_id_fkey
+        FOREIGN KEY (location_id) REFERENCES locations (id) ON DELETE RESTRICT
+        """
+    )
 
 
 def existing_tables():

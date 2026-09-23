@@ -20,19 +20,58 @@ export function getStoredUser() {
   return user ? JSON.parse(user) : null
 }
 
-export function saveSession(user, token) {
+export function getRefreshToken() {
+  return localStorage.getItem('refreshToken')
+}
+
+export function saveSession(user, token, refreshToken) {
   localStorage.setItem('token', token)
   localStorage.setItem('user', JSON.stringify(user))
+  if (refreshToken) localStorage.setItem('refreshToken', refreshToken)
 }
 
 export function clearSession() {
   localStorage.removeItem('token')
   localStorage.removeItem('user')
+  localStorage.removeItem('refreshToken')
+}
+
+// --- getting a new access token when the old one expires
+//
+// The access token only lasts 15 minutes. When a request comes back 401
+// because it expired, we send the refresh token to /users/refresh, save the
+// new pair of tokens, and retry the original request once.
+
+// Shared between concurrent requests, so several 401s at once cause only one
+// refresh call instead of one each.
+let refreshInProgress = null
+
+async function refreshSession() {
+  if (!refreshInProgress) {
+    refreshInProgress = (async () => {
+      const refreshToken = getRefreshToken()
+      if (!refreshToken) throw new Error('Not signed in')
+
+      const response = await fetch(BASE_URL + '/api/users/refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refreshToken }),
+      })
+      if (!response.ok) throw new Error('Session expired')
+
+      const data = await response.json()
+      saveSession(data.user, data.token, data.refreshToken)
+      return data.token
+    })().finally(() => {
+      refreshInProgress = null
+    })
+  }
+  return refreshInProgress
 }
 
 // --- sending requests
 
-async function request(method, path, body, query) {
+async function request(method, path, body, query, isRetry = false) {
   let url = BASE_URL + '/api' + path
   if (query) {
     // Turn {status: "open", priority: ""} into "?status=open" (empty values skipped)
@@ -64,11 +103,17 @@ async function request(method, path, body, query) {
   const data = await response.json()
 
   if (!response.ok) {
-    // 401 on a request that sent a token means the session is no longer
-    // valid (expired token, deleted account). Sign out and start over.
-    if (response.status === 401 && token) {
-      clearSession()
-      window.location.reload()
+    if (response.status === 401 && token && !isRetry) {
+      // The access token was rejected. Try once to get a new one with the
+      // refresh token and repeat the request. If that fails too, the session
+      // is really over: sign out and start again.
+      try {
+        await refreshSession()
+        return request(method, path, body, query, true)
+      } catch {
+        clearSession()
+        window.location.reload()
+      }
     }
     const error = new Error(data.error || 'Request failed')
     error.status = response.status
@@ -84,9 +129,17 @@ export const users = {
   signup: (email, password, name) => request('POST', '/users', { email, password, name }),
   login: (email, password) => request('POST', '/users/login', { email, password }),
   me: () => request('GET', '/users/me'),
+  logout: () => request('POST', '/users/logout', { refreshToken: getRefreshToken() }),
   list: () => request('GET', '/users'),
   updateRole: (id, role) => request('PUT', `/users/${id}/role`, { role }),
   remove: (id) => request('DELETE', `/users/${id}`),
+}
+
+export const buildings = {
+  list: () => request('GET', '/buildings'),
+  create: (name, floors) => request('POST', '/buildings', { name, floors }),
+  update: (id, changes) => request('PUT', `/buildings/${id}`, changes),
+  remove: (id) => request('DELETE', `/buildings/${id}`),
 }
 
 export const incidents = {
