@@ -1,5 +1,7 @@
 # Incident Tracker API
 
+> **Changed 2026-09-24 (breaking):** `GET /api/incidents`, `GET /api/users` and `GET /api/messages` return one page as an object (`{items, total, ...}`) instead of a bare array, and take paging, search and sort parameters. See [Lists and pages](#lists-and-pages). Clients written for the array shape must read `items`.
+
 Six Lambda services behind `/api/`: `users`, `buildings`, `incidents`, `messages`, `inbox`, and `migrations`. All requests and responses are JSON.
 
 | Environment | Base URL |
@@ -62,6 +64,20 @@ Every error has the same shape:
 | `500` | Server or database error — details are in the Lambda logs, not the response |
 
 Text fields are trimmed. Emails are stored lower-cased and matched case-insensitively.
+
+## Lists and pages
+
+No list endpoint ever returns everything. `GET /api/incidents` and `GET /api/users` take `?page=N&limit=M` (page 1 of 25 by default, limit at most 100) and answer one page plus the count:
+
+```json
+{ "items": [ ... ], "total": 137, "page": 2, "limit": 25, "pages": 6 }
+```
+
+`pages` is at least 1, so "page 1 of 1" reads right for an empty list; a page past the end has empty `items` and the real `total`. Both endpoints also take `?q=` (a text search: every word must appear, in any order, ignoring case), `?sort=` and `?order=asc|desc`. Every order ends with the record's id as a tie-breaker, so a row can never appear on two pages or on neither. The database does the limiting, so a page costs the same however large the table grows.
+
+A ticket's thread (`GET /api/messages`) is paged differently, by cursor, because it is read newest-first and messages keep arriving while it is open: see that endpoint.
+
+Errors: `400` `'page' must be between 1 and 1000000`, `'limit' must be between 1 and 100`, `'sort' must be one of: ...`, `'order' must be one of: asc, desc`, `'q' must be 100 characters or fewer`.
 
 ---
 
@@ -137,11 +153,20 @@ Public. Revokes the given refresh token so it cannot be used again. The client s
 
 `200` → the user object. `401` if the token's account has been deleted.
 
-### `GET /api/users` — list accounts
+### `GET /api/users` — one page of accounts
 
-Facility admin or db admin. A facility admin gets the accounts at their **own branch**; a db admin gets **every branch**. Optional `?role=employee|engineer|facility_admin`, useful for the assign-ticket dropdown.
+Facility admin or db admin. A facility admin gets the accounts at their **own branch**; a db admin gets **every branch**, or one with `?branchId=`.
 
-`200` → array of user objects, newest first.
+| Query | Meaning |
+| --- | --- |
+| `role=engineer` | one role; several with commas: `role=engineer,facility_admin` (the assign-ticket dropdown) |
+| `q=ana` | name or email contains every word |
+| `sort=created` (default, newest first), `name`, `role` (most senior first) | with `order=asc|desc` |
+| `page=`, `limit=` | see [Lists and pages](#lists-and-pages) |
+
+`200` → `{ "items": [user objects], "total", "page", "limit", "pages" }`.
+
+Errors: `400` unknown role, sort or order, or a bad page/limit/branchId.
 
 ### `PUT /api/users/{id}/role` — promote or demote
 
@@ -263,19 +288,29 @@ Any signed-in user. The reporter is taken from the token.
 
 Errors: `400` missing title, priority outside 1–5, unknown `buildingId` or one at another branch, floor outside the building's range (floors are `1..floors` and `-1..-basementFloors`; there is no 0), non-numeric room, or a room above the floor's room count.
 
-### `GET /api/incidents` — list tickets
+### `GET /api/incidents` — one page of tickets
 
 | Query | Who | Returns |
 | --- | --- | --- |
 | *(none)* or `?scope=mine` | anyone | tickets you reported |
 | `?scope=assigned` | engineer, admin | tickets assigned to you |
-| `?scope=unassigned` | admin | open tickets with no engineer |
+| `?scope=unassigned` | admin | unfinished tickets with no engineer |
 | `?scope=pending` | admin | tickets with a blocked/resolved request awaiting approval |
 | `?scope=all` | admin | every ticket |
 
-Add `?status=` and/or `?priority=` to filter (not combined with `unassigned`). Sorted most urgent first, then newest.
+Narrow any scope further:
 
-`200` → array of tickets. `403` for a scope your role can't use.
+| Query | Meaning |
+| --- | --- |
+| `status=open`, `priority=2` | one status, one priority |
+| `days=14` | created in the last N days (1–365); the site uses 14 by default |
+| `q=leak kitchen` | every word appears in the title, description, reporter's or assignee's name, or building name; a word like `#12` or `12` also matches the ticket number |
+| `sort=priority` (default: most urgent first, then newest), `created`, `updated`, `id`, `title` | with `order=asc|desc` |
+| `page=`, `limit=` | see [Lists and pages](#lists-and-pages) |
+
+`200` → `{ "items": [tickets], "total", "page", "limit", "pages" }`. `403` for a scope your role can't use.
+
+The Approvals badge asks for `?scope=pending&limit=1` and reads `total`: the cheapest way to count.
 
 ### `GET /api/incidents/{id}` — one ticket
 
@@ -368,10 +403,14 @@ Errors: `400` `location` key missing, unknown `buildingId`, floor outside the bu
 Admin only. `?days=N` (default 30, max 365) counts tickets created in the last N days.
 
 ```json
-{ "total": 42, "byStatus": { "open": 20, "in_progress": 9, "blocked": 3, "resolved": 6, "closed": 4 } }
+{
+  "total": 42,
+  "byStatus": { "open": 20, "assigned": 5, "in_progress": 9, "blocked": 3, "resolved": 3, "closed": 2 },
+  "resolution": { "averageSeconds": 93600.0, "resolvedCount": 5 }
+}
 ```
 
-Every status is always present, with `0` when empty. Errors: `400` days outside 1–365 · `403` not an admin.
+Every status is always present, with `0` when empty. `resolution` averages `resolvedAt - createdAt` over the tickets in the range that have been resolved; `averageSeconds` is `null` when none have. Errors: `400` days outside 1–365 · `403` not an admin.
 
 ### `GET /api/incidents/stats/locations` — tickets per building, floor or room
 
@@ -384,6 +423,16 @@ Admin only, same `?days=` as above. Drill down by adding parameters:
 | `?buildingId=1&floor=3` | `room` | `[{ "room": 12, "label": "312", "count": 2 }, { "room": null, "label": null, "count": 1 }]`, plus `building` and `floor` |
 
 Buildings are sorted by count, floors and rooms by number. `null` room means the ticket gave no room. Errors: `400` bad parameter · `403` not an admin · `404` unknown building.
+
+### `GET /api/incidents/stats/engineers` — per-engineer workload
+
+Admin only, same `?days=`. One row per engineer or admin with tickets assigned in the range, most loaded first.
+
+```json
+[{ "id": 7, "name": "Hugh Laurie", "role": "engineer", "assigned": 13, "resolved": 4, "averageSeconds": 5400.0 }]
+```
+
+`assigned` counts tickets currently assigned to them, `resolved` those with a resolved time, `averageSeconds` their average creation-to-resolution time (`null` if none resolved).
 
 ### `GET /api/incidents/stats/mine` — the caller's own tickets by status
 
@@ -429,11 +478,24 @@ Reporter, assignee, or admin of that ticket. The author is taken from the token.
 
 Errors: `400` empty message or over 5000 characters · `404` no such ticket or no access · `409` the ticket is `closed` — reopen it to continue the thread.
 
-### `GET /api/messages?incidentId={id}` — read a thread
+### `GET /api/messages?incidentId={id}` — one page of a thread
 
 Reporter, assignee, or admin of that ticket.
 
-`200` → array of messages, oldest first. `400` without `incidentId`. `404` no such ticket or no access.
+Without more parameters: the **newest 50** messages, returned oldest first so they read top to bottom, with how many the ticket has in all and whether older ones exist:
+
+```json
+{ "items": [ ... ], "total": 137, "hasMore": true }
+```
+
+| Query | Meaning |
+| --- | --- |
+| `limit=50` | page size, at most 200 |
+| `before=<message id>` | the page of older messages ending just before that message: pass the id of the oldest message you have to load the next page up |
+
+This is keyset pagination rather than page numbers: a page is defined by where the previous one ended, so a message posted while someone is reading never shifts the pages or shows up twice.
+
+`400` without `incidentId`, or a bad `limit`/`before`. `404` no such ticket or no access.
 
 ---
 
@@ -535,7 +597,7 @@ TOKEN=$(curl -s -X POST $API/api/users/login -H 'Content-Type: application/json'
 curl -s -X POST $API/api/incidents -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"title":"Leaking pipe","priority":2,"location":{"buildingId":1,"floor":3,"room":12}}'   # floor -1 would be B1
 
-# See your tickets
+# See your tickets (the first page of 25; add ?page=2, ?q=leak, ?sort=created&order=desc)
 curl -s $API/api/incidents -H "Authorization: Bearer $TOKEN"
 
 # Post on ticket 1

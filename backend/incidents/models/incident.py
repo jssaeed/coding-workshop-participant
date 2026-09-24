@@ -82,12 +82,30 @@ def find_basic(incident_id, lock=False):
     return fetch_one(sql, (incident_id,))
 
 
-def search(reported_by=None, assigned_to=None, status=None, priority=None, pending=False):
-    """
-    Return tickets matching every filter that is given.
+# How a list may be ordered (?sort=). Each entry is the ORDER BY for that
+# choice; %(dir)s becomes ASC or DESC. Every order ends with the id, so two
+# rows can never swap places between pages when they tie on the sort key.
+SORTS = {
+    "priority": "i.priority %(dir)s, i.created_at DESC, i.id DESC",
+    "created": "i.created_at %(dir)s, i.id %(dir)s",
+    "updated": "i.updated_at %(dir)s, i.id %(dir)s",
+    "id": "i.id %(dir)s",
+    "title": "LOWER(i.title) %(dir)s, i.id %(dir)s",
+}
+DEFAULT_SORT = "priority"  # most urgent first, then newest
 
-    Each filter adds one "AND column = %s" to the WHERE clause, with its value
-    added to params in the same order.
+# The columns a text search (?q=) looks in. A ticket number ("#12" or "12")
+# matches on the id as well.
+SEARCH_COLUMNS = ["i.title", "i.description", "reporter.name", "assignee.name", "b.name"]
+MAX_SEARCH_WORDS = 5
+
+
+def _conditions(reported_by, assigned_to, status, priority, pending, unassigned, since, q):
+    """
+    Build the WHERE clause for search() and count() from the filters given.
+
+    Returns (sql, params): "" when there are no filters, otherwise
+    " WHERE a AND b ..." with one %s per value in params.
     """
     conditions = []
     params = []
@@ -106,23 +124,58 @@ def search(reported_by=None, assigned_to=None, status=None, priority=None, pendi
         params.append(priority)
     if pending:
         conditions.append("i.pending_status IS NOT NULL")
+    if unassigned:
+        # Nobody on it, and still worth assigning.
+        conditions.append("i.assigned_to IS NULL AND i.status NOT IN ('resolved', 'closed')")
+    if since is not None:
+        conditions.append("i.created_at >= %s")
+        params.append(since)
+    if q:
+        # Every word must appear somewhere (in any column), in any order,
+        # ignoring case. ILIKE on a LEFT JOINed column is NULL for a
+        # deleted reporter, which simply does not match.
+        for word in q.split()[:MAX_SEARCH_WORDS]:
+            matches = [f"{column} ILIKE %s" for column in SEARCH_COLUMNS]
+            params.extend([f"%{word}%"] * len(SEARCH_COLUMNS))
+            number = word.lstrip("#")
+            if number.isdigit():
+                matches.append("i.id = %s")
+                params.append(int(number))
+            conditions.append("(" + " OR ".join(matches) + ")")
 
-    sql = SELECT_INCIDENT
-    if conditions:
-        sql += " WHERE " + " AND ".join(conditions)
-    # Most urgent first, then newest.
-    sql += " ORDER BY i.priority ASC, i.created_at DESC"
+    if not conditions:
+        return "", params
+    return " WHERE " + " AND ".join(conditions), params
 
+
+def search(reported_by=None, assigned_to=None, status=None, priority=None, pending=False,
+           unassigned=False, since=None, q=None, sort=DEFAULT_SORT, descending=False,
+           limit=None, offset=0):
+    """
+    Return one page of the tickets matching every filter that is given.
+
+    sort names an entry of SORTS; descending flips it. limit/offset pick the
+    page (limit=None means every row, for callers that need them all).
+    """
+    where, params = _conditions(reported_by, assigned_to, status, priority, pending, unassigned, since, q)
+    order = SORTS[sort] % {"dir": "DESC" if descending else "ASC"}
+    sql = SELECT_INCIDENT + where + " ORDER BY " + order
+    if limit is not None:
+        sql += " LIMIT %s OFFSET %s"
+        params = params + [limit, offset]
     return fetch_all(sql, params)
 
 
-def list_unassigned():
-    """Tickets that still need an engineer and are not finished."""
-    return fetch_all(
-        SELECT_INCIDENT
-        + " WHERE i.assigned_to IS NULL AND i.status NOT IN ('resolved', 'closed')"
-        + " ORDER BY i.priority ASC, i.created_at DESC"
-    )
+def count(reported_by=None, assigned_to=None, status=None, priority=None, pending=False,
+          unassigned=False, since=None, q=None):
+    """How many tickets match the same filters search() takes."""
+    where, params = _conditions(reported_by, assigned_to, status, priority, pending, unassigned, since, q)
+    # The joins are only needed when the text search looks at joined columns.
+    if q:
+        sql = "SELECT COUNT(*) AS n FROM (" + SELECT_INCIDENT + where + ") AS matching"
+    else:
+        sql = "SELECT COUNT(*) AS n FROM incidents i" + where
+    return fetch_one(sql, params)["n"]
 
 
 def assign(incident_id, assignee_id, status, author_id, note):

@@ -13,6 +13,12 @@ a request never leaves one half-open.
 When several steps must save together, wrap them in "with transaction():".
 Inside that block the helpers stop committing on their own; the whole block
 is committed at the end, or rolled back if anything in it raises.
+
+Rule for the services: every request that writes runs its checks and its
+writes inside ONE "with transaction():" block, in the controller. A single
+INSERT is atomic by itself, but the check before it ("does this email
+exist?", "is this building at my branch?") is not, and the block is what
+makes the check and the write one unit. Reads never need the block.
 """
 
 import os

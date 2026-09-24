@@ -77,7 +77,16 @@ def test_file_a_ticket_and_read_it_back(api, people, state):
 def test_ticket_is_listed_under_mine(api, people, state):
     response = api.get("/api/incidents", token=people["reporter"]["token"], params={"status": "open"})
     assert response.status_code == 200
-    assert state["ticket_id"] in [t["id"] for t in response.json()]
+    page = response.json()
+    assert state["ticket_id"] in [t["id"] for t in page["items"]]
+    assert {"items", "total", "page", "limit", "pages"} <= set(page)
+
+    # Paging and search happen on the server
+    response = api.get("/api/incidents", token=people["reporter"]["token"], params={"q": "smoke test", "limit": "1"})
+    assert response.status_code == 200
+    assert [t["id"] for t in response.json()["items"]] == [state["ticket_id"]]
+    response = api.get("/api/incidents", token=people["reporter"]["token"], params={"limit": "0"})
+    expect(response, 400, {"error": "'limit' must be between 1 and 100"})
 
 
 def test_a_stranger_gets_404_not_403(api, people, state):
@@ -95,7 +104,9 @@ def test_message_thread(api, people, state):
 
     response = api.get("/api/messages", token=reporter["token"], params={"incidentId": state["ticket_id"]})
     assert response.status_code == 200
-    assert [m["message"] for m in response.json()] == ["Still leaking."]
+    thread = response.json()
+    assert [m["message"] for m in thread["items"]] == ["Still leaking."]
+    assert (thread["total"], thread["hasMore"]) == (1, False)
 
 
 def test_own_messages_do_not_show_in_the_inbox(api, people):
@@ -156,6 +167,6 @@ def test_logout_revokes_the_refresh_token(api, people):
 def test_db_admin_can_list_every_account(api, admin, people):
     if admin is None:
         pytest.skip("db admin credentials do not work on this server; set SMOKE_ADMIN_EMAIL / SMOKE_ADMIN_PASSWORD")
-    response = api.get("/api/users", token=admin)
+    response = api.get("/api/users", token=admin, params={"q": "smoke-", "limit": "100"})
     assert response.status_code == 200
-    assert {people["reporter"]["id"], people["stranger"]["id"]} <= {u["id"] for u in response.json()}
+    assert {people["reporter"]["id"], people["stranger"]["id"]} <= {u["id"] for u in response.json()["items"]}

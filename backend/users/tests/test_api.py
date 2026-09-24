@@ -150,16 +150,19 @@ class TestListUsers:
         db.create_user("employee", branch_id=2)
         status, data = api(handler, "GET", "/api/users", user=admin)
         assert status == 200
-        assert [u["id"] for u in data] == [here["id"], admin["id"]]
-        assert all(u["branch"]["id"] == 1 for u in data)
+        assert [u["id"] for u in data["items"]] == [here["id"], admin["id"]]
+        assert all(u["branch"]["id"] == 1 for u in data["items"])
+        assert (data["total"], data["page"], data["pages"]) == (2, 1, 1)
 
-    def test_db_admin_sees_every_branch(self, api, db):
+    def test_db_admin_sees_every_branch_or_one(self, api, db):
         root = db.create_user("db_admin", branch_id=1)
         db.create_user("employee", branch_id=1)
-        db.create_user("engineer", branch_id=2)
+        miami = db.create_user("engineer", branch_id=2)
         status, data = api(handler, "GET", "/api/users", user=root)
         assert status == 200
-        assert len(data) == 3
+        assert data["total"] == 3
+        _, data = api(handler, "GET", "/api/users", user=root, query={"branchId": "2"})
+        assert [u["id"] for u in data["items"]] == [miami["id"]]
 
     def test_role_filter(self, api, db):
         admin = db.create_user("facility_admin")
@@ -167,7 +170,26 @@ class TestListUsers:
         db.create_user("employee")
         status, data = api(handler, "GET", "/api/users", user=admin, query={"role": "engineer"})
         assert status == 200
-        assert [u["id"] for u in data] == [engineer["id"]]
+        assert [u["id"] for u in data["items"]] == [engineer["id"]]
+        _, data = api(handler, "GET", "/api/users", user=admin, query={"role": "engineer,facility_admin", "sort": "role"})
+        assert [u["id"] for u in data["items"]] == [admin["id"], engineer["id"]]
+
+    def test_search_sort_and_pages(self, api, db):
+        admin = db.create_user("facility_admin", name="Zed Admin")
+        ana = db.create_user("employee", name="Ana Lopez", email="ana@acme.inc")
+        bob = db.create_user("employee", name="Bob Stone", email="bob@acme.inc")
+        cy = db.create_user("engineer", name="Cy Park", email="cy.park@acme.inc")
+
+        def ids(query):
+            _, data = api(handler, "GET", "/api/users", user=admin, query=query)
+            return [u["id"] for u in data["items"]], data["total"]
+
+        assert ids({"sort": "name"}) == ([ana["id"], bob["id"], cy["id"], admin["id"]], 4)
+        assert ids({"sort": "name", "order": "desc"})[0][0] == admin["id"]
+        assert ids({"q": "acme"})[1] == 4                    # matches the email
+        assert ids({"q": "park"}) == ([cy["id"]], 1)          # any part of the name
+        assert ids({"q": "ana lopez"}) == ([ana["id"]], 1)    # every word
+        assert ids({"sort": "name", "limit": "2", "page": "2"}) == ([cy["id"], admin["id"]], 4)
 
     def test_employee_is_403(self, api, db):
         status, data = api(handler, "GET", "/api/users", user=db.create_user("employee"))

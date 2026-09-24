@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
 import { Button, Checkbox, Form, Input, InputNumber, Modal, Popconfirm, Space, Table, Typography } from 'antd'
-import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons'
+import { DeleteOutlined, EditOutlined, PlusOutlined, SearchOutlined } from '@ant-design/icons'
 import { buildings } from '../services/api'
-import { floorLabel } from '../services/format'
+import { floorLabel, matchesSearch } from '../services/format'
 import Alert from '../components/Alert'
 
 const MAX_FLOORS = 200
@@ -38,6 +38,7 @@ export default function BuildingsPage({ user }) {
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [refreshCount, setRefreshCount] = useState(0)
+  const [search, setSearch] = useState('')
 
   // The add/edit dialog. editing is the building being edited, or null for "add".
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -156,9 +157,10 @@ export default function BuildingsPage({ user }) {
   }
 
   const columns = [
-    { title: 'Name', dataIndex: 'name' },
+    { title: 'Name', dataIndex: 'name', sorter: (a, b) => a.name.localeCompare(b.name) },
     {
       title: 'Floors',
+      sorter: (a, b) => a.floors - b.floors,
       key: 'floors',
       render: (_, b) => (b.basementFloors ? `${b.floors} above, ${b.basementFloors} below` : `${b.floors}`),
     },
@@ -190,7 +192,17 @@ export default function BuildingsPage({ user }) {
           Buildings
           {user?.branch && <span className="muted" style={{ fontSize: 16, fontWeight: 400 }}> · {user.branch.name}</span>}
         </Typography.Title>
-        <Button type="primary" icon={<PlusOutlined />} onClick={openAdd}>Add building</Button>
+        <Space wrap>
+          <Input
+            allowClear
+            prefix={<SearchOutlined />}
+            placeholder="Search buildings"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            style={{ width: 200 }}
+          />
+          <Button type="primary" icon={<PlusOutlined />} onClick={openAdd}>Add building</Button>
+        </Space>
       </div>
 
       <Alert error={error} success={success} />
@@ -198,10 +210,10 @@ export default function BuildingsPage({ user }) {
       <Table
         rowKey="id"
         columns={columns}
-        dataSource={list}
+        dataSource={list.filter((b) => matchesSearch(b.name, search))}
         loading={loading}
         pagination={false}
-        locale={{ emptyText: 'No buildings yet.' }}
+        locale={{ emptyText: search ? 'No buildings match your search.' : 'No buildings yet.' }}
       />
 
       <Modal

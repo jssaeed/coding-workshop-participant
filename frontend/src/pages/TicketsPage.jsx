@@ -1,23 +1,45 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Button, Form, Input, InputNumber, Modal, Select, Space, Table, Tag, Typography } from 'antd'
-import { PlusOutlined, ReloadOutlined } from '@ant-design/icons'
+import { PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
 import { buildings, incidents } from '../services/api'
 import {
   PRIORITIES, PRIORITY_COLORS, STATUSES, STATUS_COLORS,
   floorOptions, formatDate, formatLocation, isAdmin, isStaff, label, personName, range, roomLabel, roomsOnFloor,
 } from '../services/format'
+import { DEFAULT_DAYS, RANGES } from '../components/charts/shared'
+import useDebounce from '../hooks/useDebounce'
 import Alert from '../components/Alert'
 import MyTicketStats from '../components/MyTicketStats'
 
 // The ticket list, with filters and a dialog to file a new ticket.
+//
+// The server does the filtering, searching, sorting and paging (see
+// GET /api/incidents in backend/API.md): the page only ever holds the rows
+// it shows, so the list stays fast however many tickets there are.
+
+const PAGE_SIZES = [10, 25, 50, 100]
+const DEFAULT_PAGE_SIZE = 25
+// Table column key -> the API's ?sort= value
+const SORT_KEYS = { id: 'id', title: 'title', priority: 'priority', createdAt: 'created' }
+const DEFAULT_SORTING = { sort: 'priority', order: 'asc' } // most urgent first, then newest
+
 export default function TicketsPage({ user, onOpen }) {
   // Filters
   const [scope, setScope] = useState('mine')
   const [status, setStatus] = useState('')
   const [priority, setPriority] = useState('')
+  const [days, setDays] = useState(DEFAULT_DAYS) // only tickets created in the last N days
+  const [search, setSearch] = useState('') // matched against id, title, description, people, building
+  const query = useDebounce(search.trim()) // sent once typing pauses
 
-  // The list
+  // Which page, how big, and in what order
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
+  const [sorting, setSorting] = useState(DEFAULT_SORTING)
+
+  // The page of tickets, and how many match in all
   const [tickets, setTickets] = useState([])
+  const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   // Bumping this number makes the effect below run again (the Refresh button)
@@ -42,13 +64,29 @@ export default function TicketsPage({ user, onOpen }) {
   const chosenFloor = Form.useWatch('floor', form)
   const roomCount = roomsOnFloor(chosenBuilding, chosenFloor)
 
-  // Load the list whenever a filter changes or Refresh is clicked.
+  // Load the page whenever a filter, the order, the page or Refresh changes.
+  // A changed filter or search starts again from page 1 (one request, not
+  // one for the old page and one for the first).
+  const filterKey = JSON.stringify([scope, status, priority, days, query])
+  const lastFilterKey = useRef(filterKey)
   useEffect(() => {
+    if (lastFilterKey.current !== filterKey) {
+      lastFilterKey.current = filterKey
+      if (page !== 1) {
+        setPage(1) // runs this effect again, on page 1
+        return
+      }
+    }
+
     async function load() {
       setLoading(true)
       setError('')
       try {
-        setTickets(await incidents.list({ scope, status, priority }))
+        const data = await incidents.list({
+          scope, status, priority, days, q: query, sort: sorting.sort, order: sorting.order, page, limit: pageSize,
+        })
+        setTickets(data.items)
+        setTotal(data.total)
       } catch (err) {
         setError(err.message)
       } finally {
@@ -56,7 +94,24 @@ export default function TicketsPage({ user, onOpen }) {
       }
     }
     load()
-  }, [scope, status, priority, refreshCount])
+  }, [filterKey, scope, status, priority, days, query, sorting, page, pageSize, refreshCount])
+
+  // The table tells us about a page turn, a page size or a column sort
+  function handleTableChange(pagination, _filters, sorter) {
+    setPage(pagination.current)
+    setPageSize(pagination.pageSize)
+    if (sorter && sorter.order) {
+      setSorting({ sort: SORT_KEYS[sorter.columnKey], order: sorter.order === 'ascend' ? 'asc' : 'desc' })
+    } else {
+      setSorting(DEFAULT_SORTING) // the sort was cleared
+    }
+  }
+
+  // Which way the arrow on a sortable column points
+  function sortOrderFor(key) {
+    if (SORT_KEYS[key] !== sorting.sort) return null
+    return sorting.order === 'asc' ? 'ascend' : 'descend'
+  }
 
   async function handleCreate(values) {
     setFormError('')
@@ -85,10 +140,11 @@ export default function TicketsPage({ user, onOpen }) {
   }
 
   const columns = [
-    { title: '#', dataIndex: 'id', width: 60 },
-    { title: 'Title', dataIndex: 'title', ellipsis: true },
+    { title: '#', key: 'id', dataIndex: 'id', width: 70, sorter: true, sortOrder: sortOrderFor('id') },
+    { title: 'Title', key: 'title', dataIndex: 'title', ellipsis: true, sorter: true, sortOrder: sortOrderFor('title') },
     {
       title: 'Status',
+      key: 'status',
       dataIndex: 'status',
       render: (value, ticket) => (
         <>
@@ -99,14 +155,17 @@ export default function TicketsPage({ user, onOpen }) {
     },
     {
       title: 'Priority',
+      key: 'priority',
       dataIndex: 'priority',
-      width: 90,
+      width: 100,
+      sorter: true,
+      sortOrder: sortOrderFor('priority'),
       render: (value) => <Tag color={PRIORITY_COLORS[value]}>P{value}</Tag>,
     },
-    { title: 'Location', dataIndex: 'location', render: formatLocation, responsive: ['md'] },
-    { title: 'Reported by', dataIndex: 'reportedBy', render: personName, responsive: ['lg'] },
-    { title: 'Assigned to', dataIndex: ['assignedTo', 'name'], render: (v) => v || '—', responsive: ['lg'] },
-    { title: 'Created', dataIndex: 'createdAt', render: formatDate, responsive: ['md'] },
+    { title: 'Location', key: 'location', dataIndex: 'location', render: formatLocation, responsive: ['md'] },
+    { title: 'Reported by', key: 'reportedBy', dataIndex: 'reportedBy', render: personName, responsive: ['lg'] },
+    { title: 'Assigned to', key: 'assignedTo', dataIndex: ['assignedTo', 'name'], render: (v) => v || '—', responsive: ['lg'] },
+    { title: 'Created', key: 'createdAt', dataIndex: 'createdAt', render: formatDate, responsive: ['md'], sorter: true, sortOrder: sortOrderFor('createdAt') },
   ]
 
   return (
@@ -134,6 +193,20 @@ export default function TicketsPage({ user, onOpen }) {
           style={{ width: 140 }}
           options={[{ value: '', label: 'Any priority' }, ...PRIORITIES.map((p) => ({ value: String(p), label: `P${p}` }))]}
         />
+        <Select
+          value={days}
+          onChange={setDays}
+          style={{ width: 140 }}
+          options={RANGES.filter((r) => r.value <= 30)}
+        />
+        <Input
+          allowClear
+          prefix={<SearchOutlined />}
+          placeholder="Search tickets"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          style={{ width: 220 }}
+        />
         <Button icon={<ReloadOutlined />} onClick={() => setRefreshCount(refreshCount + 1)}>
           Refresh
         </Button>
@@ -146,8 +219,17 @@ export default function TicketsPage({ user, onOpen }) {
         columns={columns}
         dataSource={tickets}
         loading={loading}
-        pagination={{ pageSize: 15, hideOnSinglePage: true }}
-        locale={{ emptyText: 'No tickets.' }}
+        onChange={handleTableChange}
+        pagination={{
+          current: page,
+          pageSize,
+          total,
+          showSizeChanger: true,
+          pageSizeOptions: PAGE_SIZES,
+          hideOnSinglePage: total <= PAGE_SIZES[0],
+          showTotal: (count, [from, to]) => `${from}–${to} of ${count}`,
+        }}
+        locale={{ emptyText: query ? 'No tickets match your search.' : `No tickets in the last ${days} days.` }}
         onRow={(ticket) => ({ onClick: () => onOpen(ticket.id) })}
         rowClassName="clickable-row"
       />

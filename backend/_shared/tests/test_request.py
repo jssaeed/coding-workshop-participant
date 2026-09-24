@@ -3,7 +3,8 @@
 import pytest
 
 from _testing.events import event
-from lib.request import headers, http_method, json_body, path_id, path_segments, query_params
+from lib.request import (choice_param, headers, http_method, int_param, json_body, page_params, path_id,
+                         path_segments, query_params, text_param)
 from lib.responses import HttpError
 
 
@@ -83,3 +84,48 @@ class TestJsonBody:
             json_body(event(raw_body=raw))
         assert raised.value.status_code == 400
         assert raised.value.message == "Request body must be a JSON object"
+
+
+class TestQueryParameters:
+    def test_int_param_reads_a_number_in_range(self):
+        assert int_param({"page": "3"}, "page", 1, 10) == 3
+        assert int_param({}, "page", 1, 10, default=1) == 1
+        assert int_param({"page": ""}, "page", 1, 10, default=7) == 7
+        assert int_param({}, "page", 1, 10) is None
+
+    @pytest.mark.parametrize("value", ["0", "11", "abc", "1.5", " 2", "-1"])
+    def test_int_param_rejects_anything_else(self, value):
+        with pytest.raises(HttpError) as raised:
+            int_param({"page": value}, "page", 1, 10)
+        assert (raised.value.status_code, raised.value.message) == (400, "'page' must be between 1 and 10")
+
+    def test_page_params_defaults_and_offset(self):
+        assert page_params({}) == (1, 25, 0)
+        assert page_params({"page": "3", "limit": "10"}) == (3, 10, 20)
+        assert page_params({"limit": "100"}) == (1, 100, 0)
+
+    @pytest.mark.parametrize("params, message", [
+        ({"page": "0"}, "'page' must be between 1 and 1000000"),
+        ({"limit": "101"}, "'limit' must be between 1 and 100"),
+        ({"limit": "0"}, "'limit' must be between 1 and 100"),
+    ])
+    def test_page_params_limits(self, params, message):
+        with pytest.raises(HttpError) as raised:
+            page_params(params)
+        assert raised.value.message == message
+
+    def test_choice_param(self):
+        assert choice_param({"sort": "name"}, "sort", ["name", "created"]) == "name"
+        assert choice_param({}, "sort", ["name"], default="name") == "name"
+        assert choice_param({"sort": ""}, "sort", ["name"]) is None
+        with pytest.raises(HttpError) as raised:
+            choice_param({"sort": "age"}, "sort", ["name", "created"])
+        assert raised.value.message == "'sort' must be one of: name, created"
+
+    def test_text_param_trims_and_limits(self):
+        assert text_param({"q": "  leak "}, "q") == "leak"
+        assert text_param({"q": "   "}, "q") is None
+        assert text_param({}, "q") is None
+        with pytest.raises(HttpError) as raised:
+            text_param({"q": "x" * 11}, "q", max_length=10)
+        assert raised.value.message == "'q' must be 10 characters or fewer"

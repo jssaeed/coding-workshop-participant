@@ -3,9 +3,11 @@ import { STATUSES, STATUS_CHART_COLORS, label } from '../../services/format'
 // Date ranges offered by every statistics view
 export const RANGES = [
   { label: 'Last 7 days', value: 7 },
+  { label: 'Last 14 days', value: 14 },
   { label: 'Last 30 days', value: 30 },
   { label: 'Last 90 days', value: 90 },
 ]
+export const DEFAULT_DAYS = 14
 
 // {open: 5, in_progress: 2, ...} -> the items a Donut wants, always in the
 // same order and colour so the chart reads the same on every page.

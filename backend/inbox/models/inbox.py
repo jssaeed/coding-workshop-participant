@@ -40,8 +40,23 @@ def unread_messages(user_id):
 
 
 def unread_count(user_id):
-    """How many unread messages the user has in total."""
-    return len(unread_messages(user_id))
+    """
+    How many unread messages the user has in total. The same rule as
+    unread_messages(), counted in the database: the badge is polled every
+    30 seconds by every signed-in user, so it must not fetch the rows.
+    """
+    return fetch_one(
+        """
+        SELECT COUNT(*) AS n
+        FROM messages m
+        JOIN incidents i ON i.id = m.incident_id
+        LEFT JOIN ticket_reads r ON r.incident_id = i.id AND r.user_id = %(user_id)s
+        WHERE (i.reported_by = %(user_id)s OR i.assigned_to = %(user_id)s)
+          AND m.user_id IS DISTINCT FROM %(user_id)s
+          AND (r.last_read_at IS NULL OR m.created_at > r.last_read_at)
+        """,
+        {"user_id": user_id},
+    )["n"]
 
 
 def unread_by_ticket(user_id):

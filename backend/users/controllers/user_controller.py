@@ -14,10 +14,12 @@ User controller: the rules for accounts.
 
 import logging
 
+from psycopg.errors import UniqueViolation
+
 from lib import auth, validation
 from lib.database import transaction
-from lib.request import json_body, query_params
-from lib.responses import HttpError, created, no_content, ok
+from lib.request import choice_param, int_param, json_body, page_params, query_params, text_param
+from lib.responses import HttpError, created, no_content, ok, paged
 from models import branch as branch_model
 from models import refresh_token as refresh_token_model
 from models import user as user_model
@@ -49,18 +51,26 @@ def create_account(event):
     if not email.endswith(COMPANY_EMAIL_DOMAIN):
         raise HttpError(400, f"'email' must be a company address ending in {COMPANY_EMAIL_DOMAIN}")
 
-    if user_model.email_exists(email):
-        raise HttpError(409, "An account with that email already exists")
+    # The "already exists" check and the insert are one transaction, and the
+    # email column is UNIQUE, so two signups for the same address at the
+    # same moment cannot both get through: the second sees a conflict.
+    with transaction():
+        if user_model.email_exists(email):
+            raise HttpError(409, "An account with that email already exists")
 
-    # The role is fixed here, not read from the request. Otherwise anyone
-    # could sign up as an admin.
-    user = user_model.create(
-        email=email,
-        password_hash=auth.hash_password(password),
-        name=name,
-        role=auth.ROLE_EMPLOYEE,
-        branch_id=branch_id,
-    )
+        # The role is fixed here, not read from the request. Otherwise anyone
+        # could sign up as an admin.
+        try:
+            user = user_model.create(
+                email=email,
+                password_hash=auth.hash_password(password),
+                name=name,
+                role=auth.ROLE_EMPLOYEE,
+                branch_id=branch_id,
+            )
+        except UniqueViolation:
+            raise HttpError(409, "An account with that email already exists")
+
     logger.info("Created account %s", user["id"])
     return created(user_view.serialize(user))
 
@@ -136,7 +146,8 @@ def logout(event):
     body = json_body(event)
     refresh_token = body.get("refreshToken")
     if isinstance(refresh_token, str) and refresh_token:
-        refresh_token_model.revoke_by_hash(auth.hash_refresh_token(refresh_token))
+        with transaction():
+            refresh_token_model.revoke_by_hash(auth.hash_refresh_token(refresh_token))
     return no_content()
 
 
@@ -171,20 +182,41 @@ def get_user_i_may_manage(caller, user_id):
 
 def list_users(event):
     """
-    GET /api/users?role=engineer - the accounts the caller may manage.
+    GET /api/users - one page of the accounts the caller may manage.
 
-    A facility admin sees their own branch; a db admin sees every branch.
+    A facility admin sees their own branch; a db admin sees every branch
+    and may narrow it with ?branchId=. ?role=engineer keeps one role, or
+    several with commas (?role=engineer,facility_admin, for the assign
+    dropdown). ?q= searches name and email. ?sort=created|name|role with
+    ?order=asc|desc orders it (newest first by default). ?page=&limit=
+    pick the page.
     """
     caller = auth.current_user(event)
     auth.require_role(caller, [auth.ROLE_ADMIN, auth.ROLE_DB_ADMIN])
+    params = query_params(event)
 
-    role = query_params(event).get("role")
-    if role is not None and role not in auth.ALL_ROLES:
-        raise HttpError(400, f"'role' must be one of: {', '.join(auth.ALL_ROLES)}")
+    roles = None
+    if params.get("role"):
+        roles = [role.strip() for role in params["role"].split(",")]
+        for role in roles:
+            if role not in auth.ALL_ROLES:
+                raise HttpError(400, f"'role' must be one of: {', '.join(auth.ALL_ROLES)}")
 
-    branch_id = None if auth.is_db_admin(caller) else caller["branch_id"]
-    users = user_model.list_all(branch_id, role)
-    return ok(user_view.serialize_many(users))
+    if auth.is_db_admin(caller):
+        branch_id = int_param(params, "branchId", 1, 1_000_000_000)
+    else:
+        branch_id = caller["branch_id"]
+
+    q = text_param(params, "q")
+    sort = choice_param(params, "sort", list(user_model.SORTS), default=user_model.DEFAULT_SORT)
+    # Newest first is the natural order for "created"; A-Z for the others.
+    default_order = "desc" if sort == "created" else "asc"
+    descending = choice_param(params, "order", ["asc", "desc"], default=default_order) == "desc"
+    page, limit, offset = page_params(params)
+
+    total = user_model.count(branch_id, roles, q)
+    users = user_model.list_all(branch_id, roles, q, sort=sort, descending=descending, limit=limit, offset=offset)
+    return paged(user_view.serialize_many(users), total, page, limit)
 
 
 def update_role(event, user_id):
@@ -228,10 +260,12 @@ def delete_user(event, user_id):
     if user_id == caller["id"]:
         raise HttpError(403, "You cannot delete your own account")
 
-    get_user_i_may_manage(caller, user_id)
-
-    # Their tickets and messages are kept and shown as "Deleted user".
-    user_model.delete(user_id)
+    # The permission check and the delete are one transaction, so the user
+    # cannot be moved to another branch or promoted in between.
+    with transaction():
+        get_user_i_may_manage(caller, user_id)
+        # Their tickets and messages are kept and shown as "Deleted user".
+        user_model.delete(user_id)
 
     logger.info("User %s deleted by %s", user_id, caller["id"])
     return no_content()

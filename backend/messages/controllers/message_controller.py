@@ -9,7 +9,7 @@ import logging
 
 from lib import auth, validation
 from lib.database import transaction
-from lib.request import json_body, query_params
+from lib.request import int_param, json_body, query_params
 from lib.responses import HttpError, created, ok
 from models import incident as incident_model
 from models import message as message_model
@@ -18,6 +18,8 @@ from views import message_view
 logger = logging.getLogger()
 
 MAX_MESSAGE_LENGTH = 5000
+# The largest id ?before= accepts (a BIGINT never gets near it).
+MAX_MESSAGE_ID = 10**18
 
 
 def get_incident_for_thread(caller, incident_id, lock=False):
@@ -62,17 +64,34 @@ def create_message(event):
 
 
 def list_messages(event):
-    """GET /api/messages?incidentId=12 - a ticket's thread, oldest first."""
-    caller = auth.current_user(event)
+    """
+    GET /api/messages?incidentId=12 - one page of a ticket's thread.
 
-    incident_id = query_params(event).get("incidentId")
+    Without more parameters: the newest 50 messages, oldest first. ?limit=
+    changes the page size (at most 200). ?before=<message id> gives the
+    page of older messages ending just before that message; the client
+    passes the id of the oldest message it has to load the next page up.
+
+    The answer is {"items": [...], "total": N, "hasMore": true|false}.
+    """
+    caller = auth.current_user(event)
+    params = query_params(event)
+
+    incident_id = params.get("incidentId")
     if incident_id is None:
         raise HttpError(400, "'incidentId' query parameter is required")
     if not incident_id.isdigit() or int(incident_id) < 1:
         raise HttpError(400, "'incidentId' must be a positive whole number")
     incident_id = int(incident_id)
 
+    limit = int_param(params, "limit", 1, message_model.MAX_PAGE_SIZE, default=message_model.DEFAULT_PAGE_SIZE)
+    before_id = int_param(params, "before", 1, MAX_MESSAGE_ID)
+
     get_incident_for_thread(caller, incident_id)
 
-    messages = message_model.list_for_incident(incident_id)
-    return ok(message_view.serialize_many(messages))
+    messages, has_more = message_model.list_for_incident(incident_id, limit=limit, before_id=before_id)
+    return ok({
+        "items": message_view.serialize_many(messages),
+        "total": message_model.count_for_incident(incident_id),
+        "hasMore": has_more,
+    })

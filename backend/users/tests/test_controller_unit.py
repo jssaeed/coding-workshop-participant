@@ -11,6 +11,8 @@ import jwt
 import pytest
 
 from _testing.events import call
+from psycopg.errors import UniqueViolation
+
 from _testing.fakes import sign_in_as, stub
 from controllers import user_controller
 from function import handler
@@ -50,6 +52,7 @@ def models(monkeypatch, no_database):
         "find_by_id": stub(monkeypatch, user_model, "find_by_id", user_row(9)),
         "for_login": stub(monkeypatch, user_model, "find_by_email_for_login", None),
         "list_all": stub(monkeypatch, user_model, "list_all", []),
+        "count": stub(monkeypatch, user_model, "count", 0),
         "update_role": stub(monkeypatch, user_model, "update_role", side_effect=lambda uid, role: user_row(uid, role)),
         "delete": stub(monkeypatch, user_model, "delete", 1),
         "token_create": stub(monkeypatch, refresh_token_model, "create"),
@@ -229,14 +232,37 @@ class TestListUsers:
 
     def test_facility_admin_sees_own_branch(self, models, monkeypatch):
         sign_in_as(monkeypatch, "facility_admin", branch_id=2)
-        status, _ = call(handler, "GET", "/api/users", query={"role": "engineer"})
-        assert status == 200
-        assert models["list_all"].calls[0][0] == (2, "engineer")
+        status, data = call(handler, "GET", "/api/users", query={"role": "engineer", "branchId": "1"})
+        assert (status, data) == (200, {"items": [], "total": 0, "page": 1, "limit": 25, "pages": 1})
+        assert models["list_all"].calls[0][0] == (2, ["engineer"], None)  # branchId is ignored
+        assert models["list_all"].calls[0][1] == {"sort": "created", "descending": True, "limit": 25, "offset": 0}
+        assert models["count"].calls[0][0] == (2, ["engineer"], None)
 
-    def test_db_admin_sees_every_branch(self, models, monkeypatch):
+    def test_db_admin_sees_every_branch_or_one(self, models, monkeypatch):
         sign_in_as(monkeypatch, "db_admin", branch_id=1)
         call(handler, "GET", "/api/users")
-        assert models["list_all"].calls[0][0] == (None, None)
+        assert models["list_all"].calls[0][0] == (None, None, None)
+        call(handler, "GET", "/api/users", query={"branchId": "2"})
+        assert models["list_all"].calls[1][0] == (2, None, None)
+
+    def test_several_roles_search_sort_and_page(self, models, monkeypatch):
+        sign_in_as(monkeypatch, "facility_admin", branch_id=1)
+        stub(monkeypatch, user_model, "count", 31)
+        call(handler, "GET", "/api/users", query={"role": "engineer, facility_admin", "q": "ana", "sort": "name", "page": "2", "limit": "10"})
+        assert user_model.list_all.calls[0][0] == (1, ["engineer", "facility_admin"], "ana")
+        assert user_model.list_all.calls[0][1] == {"sort": "name", "descending": False, "limit": 10, "offset": 10}
+
+    @pytest.mark.parametrize("query, message", [
+        ({"role": "engineer,boss"}, "'role' must be one of: db_admin, facility_admin, engineer, employee"),
+        ({"sort": "email"}, "'sort' must be one of: created, name, role"),
+        ({"order": "sideways"}, "'order' must be one of: asc, desc"),
+        ({"limit": "500"}, "'limit' must be between 1 and 100"),
+        ({"branchId": "x"}, "'branchId' must be between 1 and 1000000000"),
+    ])
+    def test_bad_query(self, models, monkeypatch, query, message):
+        sign_in_as(monkeypatch, "db_admin")
+        status, data = call(handler, "GET", "/api/users", query=query)
+        assert (status, data) == (400, {"error": message})
 
     def test_unknown_role_filter_is_400(self, models, monkeypatch):
         sign_in_as(monkeypatch, "facility_admin")
@@ -339,3 +365,34 @@ class TestDeleteUser:
         sign_in_as(monkeypatch, "engineer", user_id=1)
         status, _ = call(handler, "DELETE", "/api/users/9")
         assert status == 403
+
+
+class TestWritesAreTransactions:
+    def test_signup_checks_and_saves_in_one_transaction(self, models, monkeypatch, no_database):
+        status, _ = call(handler, "POST", "/api/users", body=SIGNUP)
+        assert status == 201
+        assert (no_database.commits, no_database.rollbacks) == (1, 0)
+
+    def test_signup_race_on_the_same_email_is_409(self, models, monkeypatch, no_database):
+        def conflict(**fields):
+            raise UniqueViolation("duplicate key value violates unique constraint")
+
+        stub(monkeypatch, user_model, "create", side_effect=conflict)
+        status, data = call(handler, "POST", "/api/users", body=SIGNUP)
+        assert (status, data) == (409, {"error": "An account with that email already exists"})
+        assert (no_database.commits, no_database.rollbacks) == (0, 1)
+
+    def test_logout_commits_the_revoke(self, models, monkeypatch, no_database):
+        assert call(handler, "POST", "/api/users/logout", body={"refreshToken": "abc"})[0] == 204
+        assert models["token_revoke_hash"].calls and no_database.commits == 1
+
+    def test_delete_checks_and_deletes_in_one_transaction(self, models, monkeypatch, no_database):
+        sign_in_as(monkeypatch, "facility_admin", user_id=1, branch_id=1)
+        assert call(handler, "DELETE", "/api/users/9")[0] == 204
+        assert (no_database.commits, no_database.rollbacks) == (1, 0)
+
+    def test_a_refused_delete_saves_nothing(self, models, monkeypatch, no_database):
+        sign_in_as(monkeypatch, "facility_admin", user_id=1, branch_id=2)  # another branch
+        assert call(handler, "DELETE", "/api/users/9")[0] == 403
+        assert models["delete"].calls == []
+        assert (no_database.commits, no_database.rollbacks) == (0, 1)

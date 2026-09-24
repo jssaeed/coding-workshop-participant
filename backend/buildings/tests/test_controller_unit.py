@@ -1,6 +1,7 @@
 """Unit tests for controllers/building_controller.py: the rules, without a database."""
 
 import pytest
+from psycopg.errors import UniqueViolation
 
 from _testing.events import call
 from _testing.fakes import sign_in_as, stub
@@ -112,7 +113,22 @@ class TestCreateRules:
 
     def test_create_is_one_transaction(self, no_database, monkeypatch):
         self.test_created_at_the_admins_branch(no_database, monkeypatch)
-        assert no_database.commits == 1
+        assert (no_database.commits, no_database.rollbacks) == (1, 0)
+
+    def test_two_admins_adding_the_same_name_at_once(self, no_database, monkeypatch):
+        """The name check passes for both; the unique index stops the second, which gets the 409."""
+        sign_in_as(monkeypatch, "facility_admin", branch_id=2)
+        stub(monkeypatch, building_model, "name_taken", False)
+
+        def conflict(*args):
+            raise UniqueViolation("duplicate key value violates unique constraint")
+
+        stub(monkeypatch, building_model, "create", side_effect=conflict)
+        replace = stub(monkeypatch, building_model, "replace_floors")
+        status, data = call(handler, "POST", "/api/buildings", body=BODY)
+        assert (status, data) == (409, {"error": "A building with that name already exists at your branch"})
+        assert replace.calls == []
+        assert (no_database.commits, no_database.rollbacks) == (0, 1)
 
 
 class TestListRules:
@@ -147,3 +163,22 @@ class TestDeleteRules:
         stub(monkeypatch, building_model, "find_by_id", {"id": 1, "branch_id": 2})
         status, data = call(handler, "DELETE", "/api/buildings/1")
         assert (status, data) == (403, {"error": "That building belongs to another branch"})
+
+
+class TestDeleteIsOneTransaction:
+    def test_locks_checks_and_deletes_together(self, no_database, monkeypatch):
+        sign_in_as(monkeypatch, "facility_admin", branch_id=1)
+        found = stub(monkeypatch, building_model, "find_by_id", {"id": 1, "branch_id": 1})
+        deleted = stub(monkeypatch, building_model, "delete", 1)
+        assert call(handler, "DELETE", "/api/buildings/1")[0] == 204
+        assert found.calls[0] == ((1,), {"lock": True})
+        assert deleted.calls[0][0] == (1,)
+        assert (no_database.commits, no_database.rollbacks) == (1, 0)
+
+    def test_another_branch_saves_nothing(self, no_database, monkeypatch):
+        sign_in_as(monkeypatch, "facility_admin", branch_id=2)
+        stub(monkeypatch, building_model, "find_by_id", {"id": 1, "branch_id": 1})
+        deleted = stub(monkeypatch, building_model, "delete", 1)
+        assert call(handler, "DELETE", "/api/buildings/1")[0] == 403
+        assert deleted.calls == []
+        assert (no_database.commits, no_database.rollbacks) == (0, 1)

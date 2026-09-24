@@ -131,7 +131,8 @@ export const users = {
   login: (email, password) => request('POST', '/users/login', { email, password }),
   me: () => request('GET', '/users/me'),
   logout: () => request('POST', '/users/logout', { refreshToken: getRefreshToken() }),
-  list: () => request('GET', '/users'),
+  // filters: { role, branchId, q, sort, order, page, limit } -> { items, total, page, limit, pages }
+  list: (filters) => request('GET', '/users', null, filters),
   updateRole: (id, role) => request('PUT', `/users/${id}/role`, { role }),
   remove: (id) => request('DELETE', `/users/${id}`),
 }
@@ -146,6 +147,7 @@ export const buildings = {
 
 export const incidents = {
   create: (ticket) => request('POST', '/incidents', ticket),
+  // filters: { scope, status, priority, days, q, sort, order, page, limit } -> { items, total, page, limit, pages }
   list: (filters) => request('GET', '/incidents', null, filters),
   get: (id) => request('GET', `/incidents/${id}`),
   assign: (id, assigneeId) => request('PUT', `/incidents/${id}/assign`, { assigneeId }),
@@ -164,10 +166,14 @@ export const stats = {
   locations: (days, buildingId, floor) =>
     request('GET', '/incidents/stats/locations', null, { days, buildingId, floor }),
   mine: (days) => request('GET', '/incidents/stats/mine', null, { days }),
+  engineers: (days) => request('GET', '/incidents/stats/engineers', null, { days }),
 }
 
 export const messages = {
-  list: (incidentId) => request('GET', '/messages', null, { incidentId }),
+  // The newest page of a thread, oldest first: { items, total, hasMore }.
+  // options: { limit, before } - before is the id of the oldest message shown,
+  // to get the page above it.
+  list: (incidentId, options) => request('GET', '/messages', null, { incidentId, ...options }),
   create: (incidentId, message) => request('POST', '/messages', { incidentId, message }),
 }
 

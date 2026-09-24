@@ -39,6 +39,11 @@ class TestFirstRun:
         assert (admin["email"], admin["name"], admin["role"], admin["branch_id"]) == (function.DB_ADMIN_EMAIL, "admin", "db_admin", 1)
         assert auth.check_password(function.DB_ADMIN_PASSWORD, admin["password_hash"])
 
+    def test_creates_the_list_indexes(self, api, fresh):
+        api(function.handler, "POST", "/api/migrations")
+        names = {r["indexname"] for r in fresh.fetch_all("SELECT indexname FROM pg_indexes WHERE schemaname = 'public'")}
+        assert {"incidents_list_order_idx", "messages_thread_idx", "users_branch_created_idx"} <= names
+
     def test_get_before_any_migration_reports_everything_missing(self, api, fresh):
         status, data = api(function.handler, "GET", "/api/migrations")
         assert (status, data) == (200, {"tables": [], "missing": function.TABLES})

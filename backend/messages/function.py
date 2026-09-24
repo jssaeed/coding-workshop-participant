@@ -2,7 +2,7 @@
 Messages service: the conversation on a ticket.
 
     POST /api/messages                    add a message to a ticket
-    GET  /api/messages?incidentId={id}    read a ticket's thread
+    GET  /api/messages?incidentId={id}    one page of a ticket's thread (&limit=&before=)
 
 Both are limited to the ticket's reporter, its assigned engineer, and admins.
 """

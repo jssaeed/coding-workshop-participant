@@ -57,8 +57,34 @@ class TestRead:
         db.create_message(ticket, people["admin"]["id"], "third", created_seconds_ago=10)
         status, data = api(handler, "GET", "/api/messages", user=people["employee"], query={"incidentId": str(ticket)})
         assert status == 200
-        assert [m["message"] for m in data] == ["first", "second", "third"]
-        assert [m["author"]["role"] for m in data] == ["employee", "engineer", "facility_admin"]
+        assert [m["message"] for m in data["items"]] == ["first", "second", "third"]
+        assert [m["author"]["role"] for m in data["items"]] == ["employee", "engineer", "facility_admin"]
+        assert (data["total"], data["hasMore"]) == (3, False)
+
+    def test_pages_walk_back_from_the_newest(self, api, db, people, ticket):
+        """?limit= gives the newest page; ?before= the page of older ones ending just before a message."""
+        for n in range(5):
+            db.create_message(ticket, people["employee"]["id"], f"m{n}", created_seconds_ago=50 - n * 10)
+
+        def page(**query):
+            _, data = api(handler, "GET", "/api/messages", user=people["employee"], query={"incidentId": str(ticket), **query})
+            return [m["message"] for m in data["items"]], data["hasMore"], data["items"][0]["id"] if data["items"] else None
+
+        texts, has_more, oldest = page(limit="2")
+        assert (texts, has_more) == (["m3", "m4"], True)
+        texts, has_more, oldest = page(limit="2", before=str(oldest))
+        assert (texts, has_more) == (["m1", "m2"], True)
+        texts, has_more, _ = page(limit="2", before=str(oldest))
+        assert (texts, has_more) == (["m0"], False)
+
+    def test_a_message_posted_while_reading_does_not_shift_the_pages(self, api, db, people, ticket):
+        ids = [db.create_message(ticket, people["employee"]["id"], f"m{n}", created_seconds_ago=30 - n * 10) for n in range(3)]
+        _, first = api(handler, "GET", "/api/messages", user=people["employee"], query={"incidentId": str(ticket), "limit": "1"})
+        assert [m["id"] for m in first["items"]] == [ids[2]]
+        db.create_message(ticket, people["engineer"]["id"], "new")  # arrives now, newest of all
+        _, older = api(handler, "GET", "/api/messages", user=people["employee"], query={"incidentId": str(ticket), "limit": "1", "before": str(ids[2])})
+        assert [m["id"] for m in older["items"]] == [ids[1]]  # not shifted by the new message
+        assert older["total"] == 4
 
     def test_who_may_read(self, api, db, people, ticket):
         for who, expected in [("employee", 200), ("engineer", 200), ("admin", 200), ("outsider", 404), ("db_admin", 404)]:
@@ -70,8 +96,8 @@ class TestRead:
         db.create_message(ticket, gone["id"], "I was here")
         db.execute("DELETE FROM users WHERE id = %s", (gone["id"],))
         _, data = api(handler, "GET", "/api/messages", user=people["employee"], query={"incidentId": str(ticket)})
-        assert data[0]["message"] == "I was here"
-        assert data[0]["author"] is None
+        assert data["items"][0]["message"] == "I was here"
+        assert data["items"][0]["author"] is None
 
     def test_missing_or_bad_incident_id(self, api, db, people):
         assert api(handler, "GET", "/api/messages", user=people["employee"])[0] == 400

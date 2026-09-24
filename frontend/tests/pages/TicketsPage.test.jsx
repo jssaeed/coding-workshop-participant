@@ -6,7 +6,11 @@ vi.mock('../../src/services/api', async () => (await import('../helpers')).mockA
 
 import * as api from '../../src/services/api'
 import TicketsPage from '../../src/pages/TicketsPage'
-import { admin, chooseOption, employee, engineer, openedOptions, resetApi, rowContaining, ticket } from '../helpers'
+import { DEFAULT_DAYS } from '../../src/components/charts/shared'
+import { admin, chooseOption, employee, engineer, openedOptions, pageOf, resetApi, rowContaining, ticket } from '../helpers'
+
+// What the page asks the server for before anyone touches a filter
+const DEFAULT_QUERY = { scope: 'mine', status: '', priority: '', days: DEFAULT_DAYS, q: '', sort: 'priority', order: 'asc', page: 1, limit: 25 }
 
 const tickets = [
   ticket({ id: 12 }),
@@ -24,10 +28,10 @@ beforeEach(() => resetApi(api))
 
 describe('the list', () => {
   it('loads my tickets by default and shows their details', async () => {
-    api.incidents.list.mockResolvedValue(tickets)
+    api.incidents.list.mockResolvedValue(pageOf(tickets))
     renderPage()
     expect(await screen.findByText('Leaking pipe')).toBeInTheDocument()
-    expect(api.incidents.list).toHaveBeenCalledWith({ scope: 'mine', status: '', priority: '' })
+    expect(api.incidents.list).toHaveBeenCalledWith(DEFAULT_QUERY)
 
     const leak = rowContaining('Leaking pipe')
     expect(within(leak).getByText('Open')).toBeInTheDocument()
@@ -42,7 +46,7 @@ describe('the list', () => {
   })
 
   it('opens a ticket when its row is clicked', async () => {
-    api.incidents.list.mockResolvedValue(tickets)
+    api.incidents.list.mockResolvedValue(pageOf(tickets))
     const onOpen = renderPage()
     fireEvent.click(await screen.findByText('No power'))
     expect(onOpen).toHaveBeenCalledWith(13)
@@ -52,11 +56,40 @@ describe('the list', () => {
     renderPage()
     await waitFor(() => expect(api.incidents.list).toHaveBeenCalledTimes(1))
     await chooseOption(screen.getAllByRole('combobox')[1], 'In progress')
-    await waitFor(() => expect(api.incidents.list).toHaveBeenLastCalledWith({ scope: 'mine', status: 'in_progress', priority: '' }))
+    await waitFor(() => expect(api.incidents.list).toHaveBeenLastCalledWith({ ...DEFAULT_QUERY, status: 'in_progress' }))
     await chooseOption(screen.getAllByRole('combobox')[2], 'P1')
-    await waitFor(() => expect(api.incidents.list).toHaveBeenLastCalledWith({ scope: 'mine', status: 'in_progress', priority: '1' }))
+    await waitFor(() => expect(api.incidents.list).toHaveBeenLastCalledWith({ ...DEFAULT_QUERY, status: 'in_progress', priority: '1' }))
     fireEvent.click(screen.getByRole('button', { name: /Refresh/ }))
     await waitFor(() => expect(api.incidents.list).toHaveBeenCalledTimes(4))
+  })
+
+  it('searches on the server once typing pauses', async () => {
+    renderPage()
+    await waitFor(() => expect(api.incidents.list).toHaveBeenCalledTimes(1))
+    await userEvent.type(screen.getByPlaceholderText('Search tickets'), 'leak kitchen')
+    await waitFor(() => expect(api.incidents.list).toHaveBeenLastCalledWith({ ...DEFAULT_QUERY, q: 'leak kitchen' }))
+    expect(api.incidents.list).toHaveBeenCalledTimes(2) // one request for the whole phrase, not one per letter
+    expect(await screen.findByText('No tickets match your search.')).toBeInTheDocument()
+  })
+
+  it('turns pages, sorts on the server, and goes back to page 1 when a filter changes', async () => {
+    api.incidents.list.mockResolvedValue(pageOf(tickets, 60))
+    renderPage()
+    expect(await screen.findByText('1–25 of 60')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByTitle('2'))
+    await waitFor(() => expect(api.incidents.list).toHaveBeenLastCalledWith({ ...DEFAULT_QUERY, page: 2 }))
+
+    fireEvent.click(screen.getByText('Title'))
+    await waitFor(() => expect(api.incidents.list).toHaveBeenLastCalledWith({ ...DEFAULT_QUERY, page: 2, sort: 'title', order: 'asc' }))
+    fireEvent.click(screen.getByText('Title'))
+    await waitFor(() => expect(api.incidents.list).toHaveBeenLastCalledWith({ ...DEFAULT_QUERY, page: 2, sort: 'title', order: 'desc' }))
+
+    // A new filter starts from the first page, in one request
+    const calls = api.incidents.list.mock.calls.length
+    await chooseOption(screen.getAllByRole('combobox')[1], 'Open')
+    await waitFor(() => expect(api.incidents.list).toHaveBeenLastCalledWith({ ...DEFAULT_QUERY, status: 'open', sort: 'title', order: 'desc' }))
+    expect(api.incidents.list).toHaveBeenCalledTimes(calls + 1)
   })
 
   it.each([
@@ -71,7 +104,7 @@ describe('the list', () => {
 
   it('shows an empty message and a load error', async () => {
     renderPage()
-    expect(await screen.findByText('No tickets.')).toBeInTheDocument()
+    expect(await screen.findByText(`No tickets in the last ${DEFAULT_DAYS} days.`)).toBeInTheDocument()
     api.incidents.list.mockRejectedValue(new Error('Access denied'))
     fireEvent.click(screen.getByRole('button', { name: /Refresh/ }))
     expect(await screen.findByRole('alert')).toHaveTextContent('Access denied')
@@ -85,7 +118,7 @@ describe('the list', () => {
     renderPage(engineer)
     expect(await screen.findByText('My Tickets')).toBeInTheDocument()
     expect(screen.getByText('Assigned Tickets')).toBeInTheDocument()
-    expect(api.stats.mine).toHaveBeenCalledWith(30)
+    expect(api.stats.mine).toHaveBeenCalledWith(DEFAULT_DAYS)
   })
 })
 

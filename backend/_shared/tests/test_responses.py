@@ -5,7 +5,7 @@ from datetime import date, datetime, timezone
 
 import pytest
 
-from lib.responses import (HttpError, created, json_response, method_not_allowed, no_content,
+from lib.responses import (HttpError, created, json_response, method_not_allowed, no_content, paged,
                            not_found, ok)
 
 
@@ -56,3 +56,10 @@ def test_no_content_has_no_body():
     response = no_content()
     assert response["statusCode"] == 204
     assert "body" not in response
+
+
+@pytest.mark.parametrize("total, limit, pages", [(0, 25, 1), (1, 25, 1), (25, 25, 1), (26, 25, 2), (57, 10, 6)])
+def test_paged_counts_the_pages(total, limit, pages):
+    response = paged(["a"], total, 2, limit)
+    assert response["statusCode"] == 200
+    assert json.loads(response["body"]) == {"items": ["a"], "total": total, "page": 2, "limit": limit, "pages": pages}

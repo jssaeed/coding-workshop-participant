@@ -15,7 +15,9 @@ import TicketProgress from '../components/TicketProgress'
 // message thread. Opening the page marks the ticket as read.
 export default function TicketPage({ id, user, onBack, setUnread }) {
   const [ticket, setTicket] = useState(null)
-  const [thread, setThread] = useState([])
+  const [thread, setThread] = useState([]) // the newest messages, oldest first
+  const [threadTotal, setThreadTotal] = useState(0) // how many the ticket has in all
+  const [hasEarlier, setHasEarlier] = useState(false) // older messages not shown yet
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   // Bumping this number reloads the ticket after an action
@@ -52,7 +54,10 @@ export default function TicketPage({ id, user, onBack, setUnread }) {
         setBuildingId(place ? place.building.id : '')
         setFloor(place ? place.floor : null)
         setRoom(place ? place.room : null)
-        setThread(await messages.list(id))
+        const latest = await messages.list(id)
+        setThread(latest.items)
+        setThreadTotal(latest.total)
+        setHasEarlier(latest.hasMore)
 
         const read = await inbox.markRead(id)
         setUnread(read.unread) // update the bell badge in the header
@@ -69,7 +74,9 @@ export default function TicketPage({ id, user, onBack, setUnread }) {
   // buildings to move tickets to.
   useEffect(() => {
     if (!isAdmin(user)) return
-    users.list().then((all) => setStaff(all.filter(isStaff)))
+    users.list({ role: 'engineer,facility_admin', sort: 'name', limit: 100 })
+      .then((data) => setStaff(data.items.filter(isStaff)))
+      .catch(() => {})
     buildings.list().then(setBuildingList).catch(() => {})
   }, [user])
 
@@ -95,6 +102,22 @@ export default function TicketPage({ id, user, onBack, setUnread }) {
     // No building chosen means "clear the location"
     const location = buildingId !== '' ? { buildingId, floor, room: room ?? undefined } : null
     runAction(() => incidents.updateLocation(id, location))
+  }
+
+  // The thread comes in pages, newest first. This fetches the page of
+  // messages before the oldest one shown and puts it on top.
+  async function loadEarlier() {
+    setActionError('')
+    setBusy(true)
+    try {
+      const earlier = await messages.list(id, { before: thread[0].id })
+      setThread([...earlier.items, ...thread])
+      setHasEarlier(earlier.hasMore)
+    } catch (err) {
+      setActionError(err.message)
+    } finally {
+      setBusy(false)
+    }
   }
 
   function handlePost() {
@@ -338,6 +361,12 @@ export default function TicketPage({ id, user, onBack, setUnread }) {
 
       <Card title="Messages" style={{ marginTop: 16 }}>
         {thread.length === 0 && <p className="muted">No messages yet.</p>}
+        {hasEarlier && (
+          <p className="muted">
+            Showing the latest {thread.length} of {threadTotal} messages.{' '}
+            <Button size="small" onClick={loadEarlier} loading={busy}>Show earlier messages</Button>
+          </p>
+        )}
         <ul className="thread">
           {thread.map((message) => (
             <li key={message.id}>

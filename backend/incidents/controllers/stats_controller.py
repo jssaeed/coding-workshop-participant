@@ -43,13 +43,29 @@ def positive_int_param(params, name):
 
 
 def overview(event):
-    """GET /api/incidents/stats/overview?days=30 - all tickets by status. Admin only."""
+    """
+    GET /api/incidents/stats/overview?days=30 - all tickets by status, plus
+    how long tickets took to resolve. Admin only.
+    """
     caller = auth.current_user(event)
     auth.require_role(caller, [auth.ROLE_ADMIN])
 
     since = since_from_query(query_params(event))
-    rows = stats_model.count_by_status(since)
-    return ok(stats_view.status_counts(rows))
+    result = stats_view.status_counts(stats_model.count_by_status(since))
+    result["resolution"] = stats_view.resolution(stats_model.resolution_time(since))
+    return ok(result)
+
+
+def engineers(event):
+    """
+    GET /api/incidents/stats/engineers?days=30 - per engineer: tickets
+    assigned, tickets resolved and average resolution time. Admin only.
+    """
+    caller = auth.current_user(event)
+    auth.require_role(caller, [auth.ROLE_ADMIN])
+
+    since = since_from_query(query_params(event))
+    return ok(stats_view.engineers(stats_model.engineer_workload(since)))
 
 
 def locations(event):

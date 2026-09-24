@@ -21,7 +21,7 @@ The folder mirrors `src/`:
 | `pages/` | Every page | Rendered with `src/services/api.js` mocked, so a test says what the backend answers and checks what the page shows and sends |
 | `App.test.jsx` | The app shell | Sign-in state, navigation, header polling |
 
-`helpers.jsx` holds the fixtures (users of every role, a building, a ticket, a message), the mock of the API module, and two helpers for Ant Design's `Select`, which is not a native `<select>`: `chooseOption(combobox, text)` and `openedOptions(combobox)`.
+`helpers.jsx` holds the fixtures (users of every role, a building, a ticket, a message), the mock of the API module, `pageOf(items, total)` and `threadOf(items, total, hasMore)` for the one-page shapes the list endpoints answer with, and two helpers for Ant Design's `Select`, which is not a native `<select>`: `chooseOption(combobox, text)` and `openedOptions(combobox)`.
 
 `setup.js` runs before each file: it loads the jest-dom matchers, stubs `matchMedia` and `ResizeObserver` (Ant Design needs them, jsdom lacks them) and unmounts everything after each test.
 

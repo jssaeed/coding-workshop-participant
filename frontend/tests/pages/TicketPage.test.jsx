@@ -6,7 +6,7 @@ vi.mock('../../src/services/api', async () => (await import('../helpers')).mockA
 
 import * as api from '../../src/services/api'
 import TicketPage from '../../src/pages/TicketPage'
-import { admin, chooseOption, employee, engineer, message, openedOptionElements, otherEngineer, resetApi, ticket } from '../helpers'
+import { admin, chooseOption, employee, engineer, message, openedOptionElements, otherEngineer, pageOf, resetApi, threadOf, ticket } from '../helpers'
 
 const assigned = ticket({ status: 'assigned', assignedTo: { id: engineer.id, name: engineer.name, email: engineer.email } })
 
@@ -24,12 +24,12 @@ function actionForm(labelText) {
 
 beforeEach(() => {
   resetApi(api)
-  api.users.list.mockResolvedValue([employee, engineer, otherEngineer, admin])
+  api.users.list.mockResolvedValue(pageOf([employee, engineer, otherEngineer, admin]))
 })
 
 describe('reading a ticket', () => {
   it('shows the details and the thread, and marks it read', async () => {
-    api.messages.list.mockResolvedValue([message(), message({ id: 32, message: 'Thanks', author: null })])
+    api.messages.list.mockResolvedValue(threadOf([message(), message({ id: 32, message: 'Thanks', author: null })]))
     api.inbox.markRead.mockResolvedValue({ incidentId: 12, lastReadAt: 'x', unread: 4 })
     const { setUnread } = renderPage(employee)
 
@@ -73,7 +73,7 @@ describe('reading a ticket', () => {
 describe('messages', () => {
   it('posts a message and reloads the thread', async () => {
     api.messages.create.mockResolvedValue(message({ id: 33, message: 'Still leaking' }))
-    api.messages.list.mockResolvedValueOnce([]).mockResolvedValueOnce([message({ message: 'Still leaking' })])
+    api.messages.list.mockResolvedValueOnce(threadOf([])).mockResolvedValueOnce(threadOf([message({ message: 'Still leaking' })]))
     renderPage(employee)
     await screen.findByText('No messages yet.')
 
@@ -87,6 +87,22 @@ describe('messages', () => {
     expect(await screen.findByText('Still leaking')).toBeInTheDocument()
     expect(api.incidents.get).toHaveBeenCalledTimes(2)
     expect(screen.getByPlaceholderText('Write a message…')).toHaveValue('')
+  })
+
+  it('shows the newest page of a long thread and loads earlier messages on request', async () => {
+    api.messages.list
+      .mockResolvedValueOnce(threadOf([message({ id: 40, message: 'Newest' })], 3, true))
+      .mockResolvedValueOnce(threadOf([message({ id: 38, message: 'Oldest' }), message({ id: 39, message: 'Middle' })], 3, false))
+    renderPage(employee)
+    expect(await screen.findByText('Newest')).toBeInTheDocument()
+    expect(screen.getByText(/Showing the latest 1 of 3 messages/)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /Show earlier messages/ }))
+    await waitFor(() => expect(api.messages.list).toHaveBeenLastCalledWith(12, { before: 40 }))
+    expect(await screen.findByText('Oldest')).toBeInTheDocument()
+    const texts = [...document.querySelectorAll('.message-text')].map((node) => node.textContent)
+    expect(texts).toEqual(['Oldest', 'Middle', 'Newest'])
+    expect(screen.queryByRole('button', { name: /Show earlier messages/ })).not.toBeInTheDocument()
   })
 
   it('posts on Enter but not on Shift+Enter', async () => {
@@ -126,7 +142,7 @@ describe('admin actions', () => {
     api.incidents.assign.mockResolvedValue(assigned)
     renderPage(admin)
     await screen.findByText('Actions')
-    await waitFor(() => expect(api.users.list).toHaveBeenCalled())
+    await waitFor(() => expect(api.users.list).toHaveBeenCalledWith({ role: 'engineer,facility_admin', sort: 'name', limit: 100 }))
 
     const form = actionForm('Assign to')
     const assignButton = within(form).getByRole('button', { name: 'Assign' })

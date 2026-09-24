@@ -122,7 +122,7 @@ class TestList:
         }
 
     def ids(self, data):
-        return [t["id"] for t in data]
+        return [t["id"] for t in data["items"]]
 
     def test_default_scope_is_mine_most_urgent_then_newest(self, api, db, people, tickets):
         status, data = api(handler, "GET", "/api/incidents", user=people["employee"])
@@ -148,15 +148,56 @@ class TestList:
     def test_pending_scope(self, api, db, people, tickets):
         _, data = api(handler, "GET", "/api/incidents", user=people["admin"], query={"scope": "pending"})
         assert self.ids(data) == [tickets["assigned_to_engineer"]]
-        assert data[0]["pendingApproval"]["status"] == "resolved"
-        assert data[0]["pendingApproval"]["requestedBy"]["id"] == people["engineer"]["id"]
+        assert data["items"][0]["pendingApproval"]["status"] == "resolved"
+        assert data["items"][0]["pendingApproval"]["requestedBy"]["id"] == people["engineer"]["id"]
 
     def test_all_scope_is_admin_only(self, api, db, people, tickets):
         status, data = api(handler, "GET", "/api/incidents", user=people["admin"], query={"scope": "all"})
         assert status == 200
-        assert len(data) == 6
+        assert (len(data["items"]), data["total"], data["page"], data["limit"], data["pages"]) == (6, 6, 1, 25, 1)
         for who in ("engineer", "employee", "db_admin"):
             assert api(handler, "GET", "/api/incidents", user=people[who], query={"scope": "all"})[0] == 403
+
+    def test_pages_are_stable_and_do_not_overlap(self, api, db, people, tickets):
+        """Two pages of two cover the first four tickets in the same order as one page of four."""
+        _, whole = api(handler, "GET", "/api/incidents", user=people["admin"], query={"scope": "all", "limit": "4"})
+        _, first = api(handler, "GET", "/api/incidents", user=people["admin"], query={"scope": "all", "limit": "2", "page": "1"})
+        _, second = api(handler, "GET", "/api/incidents", user=people["admin"], query={"scope": "all", "limit": "2", "page": "2"})
+        assert self.ids(first) + self.ids(second) == self.ids(whole)
+        assert (first["total"], first["pages"], second["page"]) == (6, 3, 2)
+        _, beyond = api(handler, "GET", "/api/incidents", user=people["admin"], query={"scope": "all", "limit": "2", "page": "9"})
+        assert (beyond["items"], beyond["total"], beyond["pages"]) == ([], 6, 3)
+
+    def test_sort_options(self, api, db, people, tickets):
+        _, data = api(handler, "GET", "/api/incidents", user=people["employee"], query={"sort": "created", "order": "asc"})
+        assert self.ids(data) == [tickets["mine_p1"], tickets["mine_p3"], tickets["mine_p3_newer"]]
+        _, data = api(handler, "GET", "/api/incidents", user=people["employee"], query={"sort": "id", "order": "desc"})
+        assert self.ids(data) == sorted(self.ids(data), reverse=True)
+        _, data = api(handler, "GET", "/api/incidents", user=people["employee"], query={"sort": "priority", "order": "desc"})
+        assert self.ids(data)[-1] == tickets["mine_p1"]
+
+    def test_text_search(self, api, db, hq):
+        # Names without digits, so a search for a ticket number cannot match a person
+        reporter = db.create_user("employee", name="Ana Lopez", email="ana@acme.inc")
+        engineer = db.create_user("engineer", name="Bob Stone", email="bob@acme.inc")
+        place = db.create_location(hq["id"], 3, 7)
+        leak = db.create_incident(reporter["id"], title="Leaking pipe", description="under the KITCHEN sink", location_id=place["id"])
+        db.create_incident(reporter["id"], title="No power", description="third floor")
+        assigned = db.create_incident(reporter["id"], title="Cold office", assigned_to=engineer["id"], status="assigned")
+
+        def search(q):
+            _, data = api(handler, "GET", "/api/incidents", user=reporter, query={"q": q})
+            return self.ids(data), data["total"]
+
+        assert search("kitchen leak") == ([leak], 1)          # every word, any order, any case
+        assert search("kitchen power") == ([], 0)             # words must all match
+        assert search(f"#{assigned}") == ([assigned], 1)      # by ticket number
+        assert search(str(leak)) == ([leak], 1)
+        assert search("HQ") == ([leak], 1)                    # the building
+        assert search("bob") == ([assigned], 1)               # the assignee
+        assert search("lopez")[1] == 3                        # the reporter
+        _, data = api(handler, "GET", "/api/incidents", user=reporter, query={"q": "  "})
+        assert data["total"] == 3                             # blank search means no search
 
 
 class TestAssign:

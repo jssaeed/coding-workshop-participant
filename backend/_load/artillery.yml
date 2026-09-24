@@ -106,6 +106,15 @@ scenarios:
             Authorization: "Bearer {{ token }}"
           expect:
             - statusCode: 200
+            - hasProperty: items
+      - get:
+          name: GET /api/incidents?q=&page=2 (search, second page)
+          url: /api/incidents?q=load&sort=created&order=desc&page=2&limit=10
+          headers:
+            Authorization: "Bearer {{ token }}"
+          expect:
+            - statusCode: 200
+            - hasProperty: total
       - get:
           name: GET /api/buildings
           url: /api/buildings

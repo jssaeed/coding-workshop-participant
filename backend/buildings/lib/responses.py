@@ -56,6 +56,24 @@ def created(payload):
     return json_response(201, payload)
 
 
+def paged(items, total, page, limit):
+    """
+    200: one page of a list.
+
+        {"items": [...], "total": 42, "page": 2, "limit": 25, "pages": 2}
+
+    total is how many rows match in all, pages how many pages that makes
+    (at least 1, so "page 1 of 1" reads right for an empty list).
+    """
+    return json_response(200, {
+        "items": items,
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "pages": max(1, -(-total // limit)),  # ceiling division
+    })
+
+
 def no_content():
     """204: success, nothing to return (used after a delete)."""
     return json_response(204)

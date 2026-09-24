@@ -57,23 +57,54 @@ def email_exists(email):
     return row is not None
 
 
-def list_all(branch_id=None, role=None):
-    """
-    Return users newest first: those at one branch, or every branch when
-    branch_id is None (the db admin's view). Optionally only one role.
-    """
+# How the directory may be ordered (?sort=). Every order ends with the id so
+# rows never swap places between pages. "role" puts the most senior first.
+ROLE_ORDER = "CASE u.role WHEN 'db_admin' THEN 0 WHEN 'facility_admin' THEN 1 WHEN 'engineer' THEN 2 ELSE 3 END"
+SORTS = {
+    "created": "u.created_at %(dir)s, u.id %(dir)s",
+    "name": "LOWER(u.name) %(dir)s, u.id %(dir)s",
+    "role": ROLE_ORDER + " %(dir)s, LOWER(u.name) ASC, u.id ASC",
+}
+DEFAULT_SORT = "created"  # newest accounts first (with descending=True)
+
+
+def _conditions(branch_id, roles, q):
+    """The WHERE clause for list_all() and count(): (sql, params)."""
     conditions = ["TRUE"]
     params = []
     if branch_id is not None:
         conditions.append("u.branch_id = %s")
         params.append(branch_id)
-    if role is not None:
-        conditions.append("u.role = %s")
-        params.append(role)
-    return fetch_all(
-        SELECT_USER + " WHERE " + " AND ".join(conditions) + " ORDER BY u.created_at DESC",
-        params,
-    )
+    if roles:
+        conditions.append("u.role = ANY(%s)")
+        params.append(list(roles))
+    if q:
+        # Every word must appear in the name or the email, in any order.
+        for word in q.split()[:5]:
+            conditions.append("(u.name ILIKE %s OR u.email ILIKE %s)")
+            params.extend([f"%{word}%", f"%{word}%"])
+    return " WHERE " + " AND ".join(conditions), params
+
+
+def list_all(branch_id=None, roles=None, q=None, sort=DEFAULT_SORT, descending=True, limit=None, offset=0):
+    """
+    Return one page of users: those at one branch, or every branch when
+    branch_id is None (the db admin's view). roles keeps only those roles,
+    q searches name and email, sort names an entry of SORTS.
+    """
+    where, params = _conditions(branch_id, roles, q)
+    order = SORTS[sort] % {"dir": "DESC" if descending else "ASC"}
+    sql = SELECT_USER + where + " ORDER BY " + order
+    if limit is not None:
+        sql += " LIMIT %s OFFSET %s"
+        params = params + [limit, offset]
+    return fetch_all(sql, params)
+
+
+def count(branch_id=None, roles=None, q=None):
+    """How many users match the same filters list_all() takes."""
+    where, params = _conditions(branch_id, roles, q)
+    return fetch_one("SELECT COUNT(*) AS n FROM users u" + where, params)["n"]
 
 
 def update_role(user_id, role):

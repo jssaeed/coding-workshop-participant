@@ -61,6 +61,24 @@ export function personName(person) {
   return person ? person.name : 'Deleted user'
 }
 
+// 93600 seconds -> "1d 2h"; under an hour -> "35m"
+export function formatDuration(seconds) {
+  if (seconds === null || seconds === undefined) return '—'
+  const minutes = Math.round(seconds / 60)
+  if (minutes < 60) return `${minutes}m`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h ${minutes % 60}m`
+  const days = Math.floor(hours / 24)
+  return `${days}d ${hours % 24}h`
+}
+
+// Does this text contain the search words? Case-insensitive, any order.
+export function matchesSearch(text, search) {
+  const words = search.trim().toLowerCase().split(/\s+/).filter(Boolean)
+  const haystack = (text || '').toLowerCase()
+  return words.every((word) => haystack.includes(word))
+}
+
 export function formatDate(isoString) {
   if (!isoString) return ''
   return new Date(isoString).toLocaleString()

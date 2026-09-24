@@ -53,7 +53,7 @@ def models(monkeypatch, no_database):
         "find_basic": stub(monkeypatch, incident_model, "find_basic", basic()),
         "find_by_id": stub(monkeypatch, incident_model, "find_by_id", ticket_row()),
         "search": stub(monkeypatch, incident_model, "search", []),
-        "unassigned": stub(monkeypatch, incident_model, "list_unassigned", []),
+        "count": stub(monkeypatch, incident_model, "count", 0),
         "assign": stub(monkeypatch, incident_model, "assign", ticket_row()),
         "update_status": stub(monkeypatch, incident_model, "update_status", ticket_row()),
         "request_status": stub(monkeypatch, incident_model, "request_status", ticket_row()),
@@ -152,16 +152,60 @@ class TestListValidation:
         status, data = call(handler, "GET", "/api/incidents", query={"scope": scope})
         assert (status, data) == (403, {"error": "Access denied"})
 
+    @pytest.mark.parametrize("query, message", [
+        ({"page": "0"}, "'page' must be between 1 and 1000000"),
+        ({"page": "two"}, "'page' must be between 1 and 1000000"),
+        ({"limit": "0"}, "'limit' must be between 1 and 100"),
+        ({"limit": "101"}, "'limit' must be between 1 and 100"),
+        ({"days": "0"}, "'days' must be between 1 and 365"),
+        ({"days": "366"}, "'days' must be between 1 and 365"),
+        ({"sort": "colour"}, "'sort' must be one of: priority, created, updated, id, title"),
+        ({"order": "up"}, "'order' must be one of: asc, desc"),
+        ({"q": "x" * 101}, "'q' must be 100 characters or fewer"),
+    ])
+    def test_bad_paging_and_search(self, models, monkeypatch, query, message):
+        sign_in_as(monkeypatch, "facility_admin")
+        status, data = call(handler, "GET", "/api/incidents", query=query)
+        assert (status, data) == (400, {"error": message})
+
     def test_default_scope_is_mine_with_filters(self, models, monkeypatch):
         sign_in_as(monkeypatch, "employee", user_id=4)
         status, data = call(handler, "GET", "/api/incidents", query={"status": "open", "priority": "2"})
-        assert (status, data) == (200, [])
-        assert models["search"].calls[0][1] == {"reported_by": 4, "status": "open", "priority": 2}
+        assert (status, data) == (200, {"items": [], "total": 0, "page": 1, "limit": 25, "pages": 1})
+        filters = {"reported_by": 4, "status": "open", "priority": 2, "since": None, "q": None}
+        assert models["count"].calls[0][1] == filters
+        assert models["search"].calls[0][1] == {**filters, "sort": "priority", "descending": False, "limit": 25, "offset": 0}
 
     def test_pending_scope(self, models, monkeypatch):
         sign_in_as(monkeypatch, "facility_admin")
         call(handler, "GET", "/api/incidents", query={"scope": "pending"})
-        assert models["search"].calls[0][1] == {"status": None, "priority": None, "pending": True}
+        assert models["search"].calls[0][1]["pending"] is True
+        assert "reported_by" not in models["search"].calls[0][1]
+
+    def test_unassigned_scope_keeps_the_other_filters(self, models, monkeypatch):
+        sign_in_as(monkeypatch, "facility_admin")
+        call(handler, "GET", "/api/incidents", query={"scope": "unassigned", "priority": "1"})
+        kwargs = models["search"].calls[0][1]
+        assert (kwargs["unassigned"], kwargs["priority"]) == (True, 1)
+
+    def test_page_sort_and_search_reach_the_model(self, models, monkeypatch):
+        sign_in_as(monkeypatch, "facility_admin")
+        models["count"].calls.clear()
+        stub(monkeypatch, incident_model, "count", 57)
+        stub(monkeypatch, incident_model, "search", [ticket_row()])
+        status, data = call(handler, "GET", "/api/incidents",
+                            query={"scope": "all", "page": "3", "limit": "10", "sort": "created", "order": "desc", "q": " leak  kitchen "})
+        assert status == 200
+        assert (data["total"], data["page"], data["limit"], data["pages"]) == (57, 3, 10, 6)
+        assert [t["id"] for t in data["items"]] == [12]
+        kwargs = incident_model.search.calls[0][1]
+        assert (kwargs["sort"], kwargs["descending"], kwargs["limit"], kwargs["offset"], kwargs["q"]) == ("created", True, 10, 20, "leak  kitchen")
+        assert incident_model.count.calls[0][1]["q"] == "leak  kitchen"
+
+    def test_search_is_read_only(self, models, monkeypatch, no_database):
+        sign_in_as(monkeypatch, "employee")
+        call(handler, "GET", "/api/incidents", query={"q": "leak"})
+        assert no_database.commits == 0
 
 
 class TestVisibility:

@@ -17,12 +17,13 @@ users' inboxes.
 """
 
 import logging
+from datetime import datetime, timedelta, timezone
 
 from lib import auth, validation
 from lib.database import transaction
 from lib.labels import floor_label, room_label
-from lib.request import json_body, query_params
-from lib.responses import HttpError, created, ok
+from lib.request import choice_param, int_param, json_body, page_params, query_params, text_param
+from lib.responses import HttpError, created, ok, paged
 from models import building as building_model
 from models import incident as incident_model
 from models import location as location_model
@@ -145,7 +146,7 @@ def create_incident(event):
 
 def list_incidents(event):
     """
-    GET /api/incidents - list tickets.
+    GET /api/incidents - one page of tickets.
 
     ?scope=mine        tickets I filed (the default)
     ?scope=assigned    tickets assigned to me (engineer or admin)
@@ -153,40 +154,44 @@ def list_incidents(event):
     ?scope=pending     tickets waiting for an approval (admin)
     ?scope=all         every ticket (admin)
     ?status=open and ?priority=2 narrow the list further.
+    ?days=14 keeps only tickets created in the last N days (1-365).
+    ?q=leak searches the title, description, people and building.
+    ?sort=priority|created|updated|id|title and ?order=asc|desc order it.
+    ?page=2&limit=25 pick the page (limit at most 100).
+
+    The answer is {"items": [...], "total": N, "page": 2, "limit": 25, "pages": M}.
     """
     caller = auth.current_user(event)
     params = query_params(event)
 
-    scope = params.get("scope", "mine")
-    if scope not in ["mine", "assigned", "unassigned", "pending", "all"]:
-        raise HttpError(400, "'scope' must be one of: mine, assigned, unassigned, pending, all")
+    scope = choice_param(params, "scope", ["mine", "assigned", "unassigned", "pending", "all"], default="mine")
+    status = choice_param(params, "status", incident_model.STATUSES)
+    priority = int_param(params, "priority", incident_model.MIN_PRIORITY, incident_model.MAX_PRIORITY)
+    days = int_param(params, "days", 1, 365)
+    since = None if days is None else datetime.now(timezone.utc) - timedelta(days=days)
+    q = text_param(params, "q")
+    sort = choice_param(params, "sort", list(incident_model.SORTS), default=incident_model.DEFAULT_SORT)
+    descending = choice_param(params, "order", ["asc", "desc"], default="asc") == "desc"
+    page, limit, offset = page_params(params)
 
-    status = params.get("status")
-    if status is not None and status not in incident_model.STATUSES:
-        raise HttpError(400, f"'status' must be one of: {', '.join(incident_model.STATUSES)}")
-
-    priority = params.get("priority")
-    if priority is not None:
-        if not priority.isdigit() or not 1 <= int(priority) <= 5:
-            raise HttpError(400, "'priority' must be between 1 and 5")
-        priority = int(priority)
-
+    filters = {"status": status, "priority": priority, "since": since, "q": q}
     if scope == "mine":
-        incidents = incident_model.search(reported_by=caller["id"], status=status, priority=priority)
+        filters["reported_by"] = caller["id"]
     elif scope == "assigned":
         auth.require_role(caller, auth.STAFF_ROLES)
-        incidents = incident_model.search(assigned_to=caller["id"], status=status, priority=priority)
+        filters["assigned_to"] = caller["id"]
     elif scope == "unassigned":
         auth.require_role(caller, [auth.ROLE_ADMIN])
-        incidents = incident_model.list_unassigned()
+        filters["unassigned"] = True
     elif scope == "pending":
         auth.require_role(caller, [auth.ROLE_ADMIN])
-        incidents = incident_model.search(status=status, priority=priority, pending=True)
+        filters["pending"] = True
     else:  # "all"
         auth.require_role(caller, [auth.ROLE_ADMIN])
-        incidents = incident_model.search(status=status, priority=priority)
 
-    return ok(incident_view.serialize_many(incidents))
+    total = incident_model.count(**filters)
+    incidents = incident_model.search(**filters, sort=sort, descending=descending, limit=limit, offset=offset)
+    return paged(incident_view.serialize_many(incidents), total, page, limit)
 
 
 def get_incident(event, incident_id):

@@ -18,7 +18,8 @@ def models(monkeypatch, no_database):
         "incident": stub(monkeypatch, incident_model, "find_basic", dict(INCIDENT)),
         "create": stub(monkeypatch, message_model, "create", {"id": 31, "incident_id": 12, "message": "Hi", "created_at": None, "updated_at": None,
                                                               "user_id": 4, "author_name": "Ana", "author_email": "ana@acme.inc", "author_role": "employee"}),
-        "list": stub(monkeypatch, message_model, "list_for_incident", []),
+        "list": stub(monkeypatch, message_model, "list_for_incident", ([], False)),
+        "count": stub(monkeypatch, message_model, "count_for_incident", 0),
     }
 
 
@@ -80,8 +81,28 @@ class TestList:
     def test_participant_gets_the_thread(self, models, monkeypatch):
         sign_in_as(monkeypatch, "engineer", user_id=7)
         status, data = call(handler, "GET", "/api/messages", query={"incidentId": "12"})
-        assert (status, data) == (200, [])
-        assert models["list"].calls[0][0] == (12,)
+        assert (status, data) == (200, {"items": [], "total": 0, "hasMore": False})
+        assert models["list"].calls[0] == ((12,), {"limit": 50, "before_id": None})
+        assert models["count"].calls[0][0] == (12,)
+
+    def test_limit_and_before_reach_the_model(self, models, monkeypatch):
+        sign_in_as(monkeypatch, "engineer", user_id=7)
+        stub(monkeypatch, message_model, "count_for_incident", 9)
+        stub(monkeypatch, message_model, "list_for_incident", ([], True))
+        status, data = call(handler, "GET", "/api/messages", query={"incidentId": "12", "limit": "2", "before": "31"})
+        assert (status, data) == (200, {"items": [], "total": 9, "hasMore": True})
+        assert message_model.list_for_incident.calls[0] == ((12,), {"limit": 2, "before_id": 31})
+
+    @pytest.mark.parametrize("query, message", [
+        ({"incidentId": "12", "limit": "0"}, "'limit' must be between 1 and 200"),
+        ({"incidentId": "12", "limit": "201"}, "'limit' must be between 1 and 200"),
+        ({"incidentId": "12", "before": "0"}, f"'before' must be between 1 and {10**18}"),
+        ({"incidentId": "12", "before": "abc"}, f"'before' must be between 1 and {10**18}"),
+    ])
+    def test_bad_paging(self, models, monkeypatch, query, message):
+        sign_in_as(monkeypatch, "engineer", user_id=7)
+        status, data = call(handler, "GET", "/api/messages", query=query)
+        assert (status, data) == (400, {"error": message})
 
 
 class TestView:

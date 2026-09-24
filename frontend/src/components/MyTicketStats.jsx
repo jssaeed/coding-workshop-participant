@@ -4,12 +4,12 @@ import { stats } from '../services/api'
 import { isStaff } from '../services/format'
 import Alert from './Alert'
 import Donut from './charts/Donut'
-import { RANGES, Tile, statusItems } from './charts/shared'
+import { DEFAULT_DAYS, RANGES, Tile, statusItems } from './charts/shared'
 
 // The two personal cards at the top of the Tickets page: tickets the user
 // reported, and (for engineers and admins) tickets assigned to them.
 export default function MyTicketStats({ user }) {
-  const [days, setDays] = useState(30)
+  const [days, setDays] = useState(DEFAULT_DAYS)
   const [mine, setMine] = useState(null)
   const [error, setError] = useState('')
 

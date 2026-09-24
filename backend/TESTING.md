@@ -65,18 +65,25 @@ JUnit XML is what CI systems and IDEs read to show pass/fail per test. Coverage 
 
 ## Results
 
-Last run on 2026-09-24 (`./bin/test-backend.sh --cov`, see `test-results/backend/summary.txt`), all passing:
+Last run on 2026-09-24 (`./bin/test-backend.sh`, see `test-results/backend/summary.txt`):
 
-| Suite | Tests | Coverage of the suite's own code |
+| Suite | Tests | Coverage of the suite's own code (earlier `--cov` run) |
 | --- | ---: | ---: |
-| `_shared` (the library) | 192 | 98% |
-| `users` | 95 | 100% |
-| `buildings` | 69 | 99% |
-| `incidents` | 178 | 99% |
-| `messages` | 36 | 100% |
-| `inbox` | 37 | 100% |
-| `migrations` | 22 | 85% |
-| **Total** | **629** | |
+| `_shared` (the library) | 210 | 98% |
+| `users` | 107 | 100% |
+| `buildings` | 72 | 99% |
+| `incidents` | 193 | 99% |
+| `messages` | 43 | 100% |
+| `inbox` | 39 | 100% |
+| `migrations` | 23 | 85% |
+| **Total** | **687** | |
+
+One test fails at the moment: `incidents/tests/test_api.py::TestStats::test_overview_counts_the_last_n_days`, which predates the paging work and expects the overview without the `resolution` block that the engineer-statistics change added. Everything else passes.
+
+The suites cover the two rules every write and every list now follows:
+
+- **Every request that writes runs in one transaction.** The controller opens `with transaction():` around the permission check, the row lock and the writes, so a request that fails half-way saves nothing (the unit tests count commits and rollbacks on the fake connection; the integration tests check the rows). Races that slip past a check are caught by the database's own rules and turned into the same `409` (a duplicate email at signup, a duplicate building name).
+- **Every list is one page from the database.** `GET /api/incidents` and `GET /api/users` take `page`/`limit`/`q`/`sort`/`order` and answer `{items, total, page, limit, pages}`; `GET /api/messages` walks a thread newest-first with a `before` cursor. Tests check that pages do not overlap, that a message posted mid-read does not shift the pages, and that the migration creates the indexes the page queries use.
 
 Coverage is line and branch coverage of `function.py`, `controllers/`, `models/` and `views/` for a service, and of every file for `_shared`. The uncovered lines in `migrations/function.py` are the upgrade paths for databases created by earlier versions of the schema (see below). Against the guide's goals: backend components and API endpoints are above the 80% and 90% marks, and every documented validation and error case has a test.
 

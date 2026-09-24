@@ -1,18 +1,19 @@
 import { useEffect, useState } from 'react'
-import { Breadcrumb, Card, Col, Row, Segmented, Typography } from 'antd'
+import { Breadcrumb, Card, Col, Row, Segmented, Table, Typography } from 'antd'
 import { stats } from '../services/api'
-import { floorLabel } from '../services/format'
+import { floorLabel, formatDuration, label } from '../services/format'
 import Alert from '../components/Alert'
 import Donut from '../components/charts/Donut'
 import BarChart from '../components/charts/BarChart'
-import { RANGES, Tile, statusItems } from '../components/charts/shared'
+import { DEFAULT_DAYS, RANGES, Tile, statusItems } from '../components/charts/shared'
 
 // Admin only: every ticket by status, and tickets per building, with a
 // click-through to floors and then rooms.
 export default function StatsPage() {
-  const [days, setDays] = useState(30)
+  const [days, setDays] = useState(DEFAULT_DAYS)
   const [error, setError] = useState('')
   const [overview, setOverview] = useState(null)
+  const [engineers, setEngineers] = useState([])
 
   // The location drill-down. building/floor say how deep we are.
   const [building, setBuilding] = useState(null) // {id, name} or null
@@ -23,6 +24,7 @@ export default function StatsPage() {
   useEffect(() => {
     setError('')
     stats.overview(days).then(setOverview).catch((err) => setError(err.message))
+    stats.engineers(days).then(setEngineers).catch((err) => setError(err.message))
   }, [days])
 
   // Load the location level currently being looked at
@@ -76,15 +78,42 @@ export default function StatsPage() {
       {overview && (
         <Card title="All tickets" style={{ marginBottom: 16 }}>
           <Row gutter={[24, 24]} align="middle">
-            <Col xs={24} md={6}>
+            <Col xs={24} md={5}>
               <Tile value={overview.total} caption={`tickets opened in the last ${days} days`} />
             </Col>
-            <Col xs={24} md={18}>
+            <Col xs={24} md={5}>
+              <Tile
+                value={formatDuration(overview.resolution.averageSeconds)}
+                caption={`average time to resolve (${overview.resolution.resolvedCount} resolved)`}
+              />
+            </Col>
+            <Col xs={24} md={14}>
               <Donut items={statusItems(overview.byStatus)} title="By status" />
             </Col>
           </Row>
         </Card>
       )}
+
+      <Card title="Engineers" style={{ marginBottom: 16 }}>
+        <Table
+          rowKey="id"
+          size="small"
+          dataSource={engineers}
+          pagination={false}
+          locale={{ emptyText: 'No tickets were assigned in this range.' }}
+          columns={[
+            { title: 'Engineer', dataIndex: 'name', render: (name, e) => <span>{name} <span className="muted">({label(e.role)})</span></span> },
+            { title: 'Tickets assigned', dataIndex: 'assigned', sorter: (a, b) => a.assigned - b.assigned, defaultSortOrder: 'descend' },
+            { title: 'Resolved', dataIndex: 'resolved', sorter: (a, b) => a.resolved - b.resolved },
+            {
+              title: 'Average time to resolve',
+              dataIndex: 'averageSeconds',
+              render: formatDuration,
+              sorter: (a, b) => (a.averageSeconds ?? Infinity) - (b.averageSeconds ?? Infinity),
+            },
+          ]}
+        />
+      </Card>
 
       <Card title={levelTitle} extra={<Breadcrumb items={crumbs} />} className={loading ? 'chart-loading' : ''}>
         <p className="muted" style={{ marginTop: 0 }}>

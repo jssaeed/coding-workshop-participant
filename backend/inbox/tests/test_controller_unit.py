@@ -33,9 +33,11 @@ class TestGrouping:
         assert entries[0]["incident"] == {"id": 12, "title": "Ticket 12", "status": "open", "priority": 2}
         assert entries[1]["unread_count"] == 1
 
-    def test_unread_count(self, monkeypatch, no_database):
-        stub(monkeypatch, inbox_model, "unread_messages", [message(1, 1, "a"), message(2, 2, "b")])
+    def test_unread_count_is_one_count_query(self, monkeypatch, no_database):
+        stub(monkeypatch, inbox_model, "fetch_one", {"n": 2})
         assert inbox_model.unread_count(4) == 2
+        sql, params = inbox_model.fetch_one.calls[0][0]
+        assert "COUNT(*)" in sql and params == {"user_id": 4}
 
 
 class TestView:
@@ -74,6 +76,17 @@ class TestMarkReadRules:
         if expected == 200:
             assert data == {"incidentId": 12, "lastReadAt": NOW.isoformat(), "unread": 1}
             assert models["mark"].calls[0][0] == (user_id, 12)
+
+    def test_mark_read_is_one_transaction(self, models, monkeypatch, no_database):
+        sign_in_as(monkeypatch, "employee", user_id=4)
+        assert call(handler, "PUT", "/api/inbox/12/read")[0] == 200
+        assert (no_database.commits, no_database.rollbacks) == (1, 0)
+
+    def test_refused_mark_read_saves_nothing(self, models, monkeypatch, no_database):
+        sign_in_as(monkeypatch, "employee", user_id=5)
+        assert call(handler, "PUT", "/api/inbox/12/read")[0] == 404
+        assert models["mark"].calls == []
+        assert (no_database.commits, no_database.rollbacks) == (0, 1)
 
     def test_unknown_ticket(self, models, monkeypatch):
         sign_in_as(monkeypatch, "facility_admin")

@@ -82,6 +82,9 @@ SCHEMA = [
     )
     """,
 
+    # The employee directory: one branch's accounts, newest first, by page.
+    "CREATE INDEX IF NOT EXISTS users_branch_created_idx ON users (branch_id, created_at DESC, id DESC)",
+
     # --- buildings -------------------------------------------------------
     # Defined by a facility admin for their own branch: a name, how many
     # floors above ground (1..floors) and how many below (B1..Bm). The
@@ -208,6 +211,10 @@ SCHEMA = [
     "CREATE INDEX IF NOT EXISTS incidents_priority_idx    ON incidents (priority)",
     "CREATE INDEX IF NOT EXISTS incidents_reported_by_idx ON incidents (reported_by)",
     "CREATE INDEX IF NOT EXISTS incidents_assigned_to_idx ON incidents (assigned_to)",
+    # The ticket list's default order (most urgent, then newest, then id as
+    # the tie-breaker). With this index a page of the list is an index
+    # range scan: PostgreSQL reads the rows for that page and nothing else.
+    "CREATE INDEX IF NOT EXISTS incidents_list_order_idx ON incidents (priority, created_at DESC, id DESC)",
 
     # --- messages --------------------------------------------------------
     # The conversation on a ticket. Status and assignment changes are also
@@ -225,6 +232,9 @@ SCHEMA = [
     )
     """,
     "CREATE INDEX IF NOT EXISTS messages_incident_id_idx ON messages (incident_id)",
+    # A thread is read newest-first one page at a time (keyset pagination on
+    # created_at, id); this index serves that order directly.
+    "CREATE INDEX IF NOT EXISTS messages_thread_idx ON messages (incident_id, created_at DESC, id DESC)",
 
     # --- refresh_tokens --------------------------------------------------
     # Long-lived tokens that can be exchanged for a new short-lived access
@@ -275,20 +285,30 @@ TABLES = ["branches", "users", "buildings", "building_floors", "locations", "inc
 
 
 def apply_schema():
-    """Run every statement in SCHEMA, in order, and save the result."""
+    """
+    Run every statement in SCHEMA, in order, as one transaction.
+
+    PostgreSQL DDL is transactional, so a statement that fails half-way
+    down the list leaves the database exactly as it was: the whole run is
+    rolled back and the error is raised for the handler to report.
+    """
     connection = get_connection()
-    with connection.cursor() as cursor:
-        replace_old_locations_table(cursor)
-        for statement in SCHEMA:
-            cursor.execute(statement)
-        restore_incident_location_link(cursor)
-        allow_deleting_users_with_history(cursor)
-        add_assigned_status(cursor)
-        add_branches_to_users(cursor)
-        allow_basement_floors(cursor)
-        add_db_admin_role(cursor)
-        ensure_db_admin_account(cursor)
-    connection.commit()
+    try:
+        with connection.cursor() as cursor:
+            replace_old_locations_table(cursor)
+            for statement in SCHEMA:
+                cursor.execute(statement)
+            restore_incident_location_link(cursor)
+            allow_deleting_users_with_history(cursor)
+            add_assigned_status(cursor)
+            add_branches_to_users(cursor)
+            allow_basement_floors(cursor)
+            add_db_admin_role(cursor)
+            ensure_db_admin_account(cursor)
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -530,15 +550,15 @@ def ensure_db_admin_account(cursor):
 def db_admin_exists():
     """True once the users table exists and holds a db admin."""
     connection = get_connection()
-    with connection.cursor() as cursor:
-        cursor.execute("SELECT to_regclass('public.users') IS NOT NULL AS has_table")
-        if not cursor.fetchone()["has_table"]:
-            connection.rollback()
-            return False
-        cursor.execute("SELECT 1 FROM users WHERE role = %s LIMIT 1", (ROLE_DB_ADMIN,))
-        found = cursor.fetchone() is not None
-    connection.rollback()
-    return found
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT to_regclass('public.users') IS NOT NULL AS has_table")
+            if not cursor.fetchone()["has_table"]:
+                return False
+            cursor.execute("SELECT 1 FROM users WHERE role = %s LIMIT 1", (ROLE_DB_ADMIN,))
+            return cursor.fetchone() is not None
+    finally:
+        connection.rollback()  # a read: end the transaction either way
 
 
 def require_db_admin(event):
@@ -577,31 +597,39 @@ def load_seed():
     with open(SEED_FILE, encoding="utf-8") as file:
         sql = file.read()
 
+    # One transaction: the tables are never left empty if the file fails
+    # to load half-way.
     connection = get_connection()
-    with connection.cursor() as cursor:
-        cursor.execute(f"TRUNCATE {', '.join(SEED_TABLES)} RESTART IDENTITY CASCADE")
-        cursor.execute(sql)
-        counts = {}
-        for table in SEED_TABLES:
-            cursor.execute(f"SELECT COUNT(*) AS n FROM {table}")
-            counts[table] = cursor.fetchone()["n"]
-    connection.commit()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(f"TRUNCATE {', '.join(SEED_TABLES)} RESTART IDENTITY CASCADE")
+            cursor.execute(sql)
+            counts = {}
+            for table in SEED_TABLES:
+                cursor.execute(f"SELECT COUNT(*) AS n FROM {table}")
+                counts[table] = cursor.fetchone()["n"]
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
     return counts
 
 
 def existing_tables():
     """Return the names from TABLES that exist in the database."""
     connection = get_connection()
-    with connection.cursor() as cursor:
-        cursor.execute(
-            """
-            SELECT table_name
-            FROM information_schema.tables
-            WHERE table_schema = 'public'
-            """
-        )
-        rows = cursor.fetchall()
-    connection.rollback()  # end the read-only transaction
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT table_name
+                FROM information_schema.tables
+                WHERE table_schema = 'public'
+                """
+            )
+            rows = cursor.fetchall()
+    finally:
+        connection.rollback()  # end the read-only transaction
 
     found = [row["table_name"] for row in rows]
     return [name for name in TABLES if name in found]

@@ -15,6 +15,8 @@ Building controller: the rules for a branch's list of buildings.
 
 import logging
 
+from psycopg.errors import UniqueViolation
+
 from lib import auth, validation
 from lib.database import transaction
 from lib.labels import floor_label, room_digits, room_label
@@ -111,11 +113,16 @@ def create_building(event):
     include_floor = optional_bool(body, "roomNumbersIncludeFloor", default=False)
     rooms_by_floor = rooms_from_body(body, floor_numbers(floors, basement_floors), existing={})
 
-    if building_model.name_taken(caller["branch_id"], name):
-        raise HttpError(409, "A building with that name already exists at your branch")
-
+    # The name check, the building and its floors are one transaction. The
+    # unique index on (branch, name) catches two admins adding the same
+    # name at the same moment: the second gets the 409 as well.
     with transaction():
-        building = building_model.create(caller["branch_id"], name, floors, basement_floors, include_floor)
+        if building_model.name_taken(caller["branch_id"], name):
+            raise HttpError(409, "A building with that name already exists at your branch")
+        try:
+            building = building_model.create(caller["branch_id"], name, floors, basement_floors, include_floor)
+        except UniqueViolation:
+            raise HttpError(409, "A building with that name already exists at your branch")
         building_model.replace_floors(building["id"], rooms_by_floor)
 
     logger.info("Building %s created by %s", building["id"], caller["id"])
@@ -180,12 +187,14 @@ def delete_building(event, building_id):
     """DELETE /api/buildings/{id} - remove a building. Admin only."""
     caller = auth.current_user(event)
     auth.require_role(caller, [auth.ROLE_ADMIN])
-    get_building_in_my_branch(caller, building_id)
-
-    try:
-        building_model.delete(building_id)
-    except building_model.BuildingInUse:
-        raise HttpError(409, "Building has tickets located in it and cannot be deleted")
+    # Lock the building for the check and the delete, so a ticket cannot be
+    # filed in it in between (ticket creation takes a share lock on the row).
+    with transaction():
+        get_building_in_my_branch(caller, building_id, lock=True)
+        try:
+            building_model.delete(building_id)
+        except building_model.BuildingInUse:
+            raise HttpError(409, "Building has tickets located in it and cannot be deleted")
 
     logger.info("Building %s deleted by %s", building_id, caller["id"])
     return no_content()

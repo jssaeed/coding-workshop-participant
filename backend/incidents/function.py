@@ -2,7 +2,7 @@
 Incidents service: tickets.
 
     POST /api/incidents               file a ticket
-    GET  /api/incidents               list tickets (?scope=mine|assigned|unassigned|all)
+    GET  /api/incidents               one page of tickets (?scope=&status=&priority=&days=&q=&sort=&order=&page=&limit=)
     GET  /api/incidents/{id}          one ticket
     PUT  /api/incidents/{id}/assign   assign an engineer (admin)
     PUT  /api/incidents/{id}/status   change the status (assignee or admin)
@@ -11,6 +11,7 @@ Incidents service: tickets.
     PUT  /api/incidents/{id}/location move the ticket to another place (admin)
     GET  /api/incidents/stats/overview   tickets by status (admin)
     GET  /api/incidents/stats/locations  tickets per building / floor / room (admin)
+    GET  /api/incidents/stats/engineers  per-engineer workload and resolution time (admin)
     GET  /api/incidents/stats/mine       the caller's own tickets by status
 
 This file only decides which controller function handles the request. The
@@ -51,6 +52,8 @@ def route(event):
             return stats_controller.overview(event)
         if len(segments) == 2 and segments[1] == "locations":
             return stats_controller.locations(event)
+        if len(segments) == 2 and segments[1] == "engineers":
+            return stats_controller.engineers(event)
         if len(segments) == 2 and segments[1] == "mine":
             return stats_controller.mine(event)
         return not_found()

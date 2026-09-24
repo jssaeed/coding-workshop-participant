@@ -8,6 +8,7 @@ headers and the JSON body.
 
 import base64
 import json
+import re
 
 from .responses import HttpError
 
@@ -57,6 +58,68 @@ def path_id(segments, index=0):
 def query_params(event):
     """Return the query string as a dict, e.g. {"status": "open"}."""
     return event.get("queryStringParameters") or {}
+
+
+# --- pagination -------------------------------------------------------------
+#
+# Lists are never sent whole. Every list endpoint takes ?page=N&limit=M and
+# answers with one page plus the total, so a table can show page numbers
+# (see responses.paged). The database does the limiting (LIMIT/OFFSET), so
+# a page costs the same however large the table grows.
+
+DEFAULT_PAGE_SIZE = 25
+MAX_PAGE_SIZE = 100
+
+
+def int_param(params, name, minimum, maximum, default=None):
+    """
+    A whole-number query parameter between minimum and maximum, or default
+    when it is absent. Anything else is a 400 that names the parameter.
+    """
+    value = params.get(name)
+    if value is None or value == "":
+        return default
+    if not isinstance(value, str) or not re.fullmatch(r"-?\d+", value) or not minimum <= int(value) <= maximum:
+        raise HttpError(400, f"'{name}' must be between {minimum} and {maximum}")
+    return int(value)
+
+
+def page_params(params, default_limit=DEFAULT_PAGE_SIZE, max_limit=MAX_PAGE_SIZE):
+    """
+    Read ?page= and ?limit= from the query string.
+
+    Returns (page, limit, offset): the 1-based page number, how many rows it
+    holds, and how many rows to skip to reach it. Missing values mean the
+    first page of default_limit rows.
+    """
+    page = int_param(params, "page", 1, 1_000_000, default=1)
+    limit = int_param(params, "limit", 1, max_limit, default=default_limit)
+    return page, limit, (page - 1) * limit
+
+
+def choice_param(params, name, allowed, default=None):
+    """A query parameter that must be one of the allowed values."""
+    value = params.get(name)
+    if value is None or value == "":
+        return default
+    if value not in allowed:
+        raise HttpError(400, f"'{name}' must be one of: {', '.join(allowed)}")
+    return value
+
+
+def text_param(params, name, max_length=100):
+    """A free-text query parameter, trimmed; '' and absent both give None."""
+    value = params.get(name)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise HttpError(400, f"'{name}' must be text")
+    value = value.strip()
+    if value == "":
+        return None
+    if len(value) > max_length:
+        raise HttpError(400, f"'{name}' must be {max_length} characters or fewer")
+    return value
 
 
 def headers(event):

@@ -41,3 +41,28 @@ def room_counts(rows, label_for):
     (null = no room given). label_for(room) writes the room the building's way.
     """
     return [{"room": row["room"], "label": label_for(row["room"]), "count": row["count"]} for row in rows]
+
+
+def seconds(value):
+    """AVG() comes back as a Decimal; the API sends a plain number (or null)."""
+    return None if value is None else float(value)
+
+
+def resolution(row):
+    """{"averageSeconds": 93600.0, "resolvedCount": 12}"""
+    return {"averageSeconds": seconds(row["average_seconds"]), "resolvedCount": row["resolved_count"]}
+
+
+def engineers(rows):
+    """[{"id": 7, "name": "Hugh", "role": "engineer", "assigned": 13, "resolved": 4, "averageSeconds": 3600.0}]"""
+    return [
+        {
+            "id": row["id"],
+            "name": row["name"],
+            "role": row["role"],
+            "assigned": row["assigned_count"],
+            "resolved": row["resolved_count"],
+            "averageSeconds": seconds(row["average_seconds"]),
+        }
+        for row in rows
+    ]

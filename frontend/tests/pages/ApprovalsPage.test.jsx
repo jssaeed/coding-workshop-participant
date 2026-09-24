@@ -6,7 +6,10 @@ vi.mock('../../src/services/api', async () => (await import('../helpers')).mockA
 
 import * as api from '../../src/services/api'
 import ApprovalsPage from '../../src/pages/ApprovalsPage'
-import { engineer, message, resetApi, ticket } from '../helpers'
+import { engineer, message, pageOf, resetApi, threadOf, ticket } from '../helpers'
+
+// What the page asks the server for before anyone types a search
+const DEFAULT_QUERY = { scope: 'pending', q: '', page: 1, limit: 10 }
 
 const pending = ticket({
   id: 12, status: 'in_progress', assignedTo: { id: engineer.id, name: engineer.name },
@@ -27,12 +30,12 @@ beforeEach(() => resetApi(api))
 
 describe('ApprovalsPage', () => {
   it('lists every waiting request with its reason and thread', async () => {
-    api.incidents.list.mockResolvedValue([pending, blocked])
-    api.messages.list.mockImplementation((id) => Promise.resolve(id === 12 ? [message(), message({ id: 32, message: 'Done.' })] : []))
+    api.incidents.list.mockResolvedValue(pageOf([pending, blocked]))
+    api.messages.list.mockImplementation((id) => Promise.resolve(threadOf(id === 12 ? [message(), message({ id: 32, message: 'Done.' })] : [])))
     renderPage()
 
     expect(await screen.findByText('#12 Leaking pipe')).toBeInTheDocument()
-    expect(api.incidents.list).toHaveBeenCalledWith({ scope: 'pending' })
+    expect(api.incidents.list).toHaveBeenCalledWith(DEFAULT_QUERY)
     expect(screen.getByText('Reason: Pipe replaced')).toBeInTheDocument()
     expect(screen.getByText('Thread (2 messages)')).toBeInTheDocument()
     expect(screen.getByText('No reason given.')).toBeInTheDocument()
@@ -43,8 +46,8 @@ describe('ApprovalsPage', () => {
   })
 
   it('opens the thread and the ticket', async () => {
-    api.incidents.list.mockResolvedValue([pending])
-    api.messages.list.mockResolvedValue([message()])
+    api.incidents.list.mockResolvedValue(pageOf([pending]))
+    api.messages.list.mockResolvedValue(threadOf([message()]))
     const onOpen = renderPage()
     fireEvent.click(await screen.findByText('Thread (1 message)'))
     expect(await screen.findByText('On my way up.')).toBeInTheDocument()
@@ -53,7 +56,7 @@ describe('ApprovalsPage', () => {
   })
 
   it('approves with a note and reloads', async () => {
-    api.incidents.list.mockResolvedValueOnce([pending]).mockResolvedValueOnce([])
+    api.incidents.list.mockResolvedValueOnce(pageOf([pending])).mockResolvedValueOnce(pageOf([]))
     api.incidents.decideApproval.mockResolvedValue(ticket({ status: 'resolved' }))
     renderPage()
     await screen.findByText('#12 Leaking pipe')
@@ -67,7 +70,7 @@ describe('ApprovalsPage', () => {
   })
 
   it('rejects without a note', async () => {
-    api.incidents.list.mockResolvedValue([pending])
+    api.incidents.list.mockResolvedValue(pageOf([pending]))
     api.incidents.decideApproval.mockResolvedValue(ticket())
     renderPage()
     await screen.findByText('#12 Leaking pipe')
@@ -77,7 +80,7 @@ describe('ApprovalsPage', () => {
   })
 
   it('shows errors from the decision and from loading', async () => {
-    api.incidents.list.mockResolvedValue([pending])
+    api.incidents.list.mockResolvedValue(pageOf([pending]))
     api.incidents.decideApproval.mockRejectedValue(new Error('Nothing is waiting for approval on this ticket'))
     renderPage()
     await screen.findByText('#12 Leaking pipe')
@@ -90,5 +93,26 @@ describe('ApprovalsPage', () => {
     expect(await screen.findByText('Nothing is waiting for approval.')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /Refresh/ }))
     await waitFor(() => expect(api.incidents.list).toHaveBeenCalledTimes(2))
+  })
+
+  it('searches on the server once typing pauses', async () => {
+    renderPage()
+    await screen.findByText('Nothing is waiting for approval.')
+    await userEvent.type(screen.getByPlaceholderText('Search requests'), 'pipe')
+    await waitFor(() => expect(api.incidents.list).toHaveBeenLastCalledWith({ ...DEFAULT_QUERY, q: 'pipe' }))
+    expect(api.incidents.list).toHaveBeenCalledTimes(2)
+    expect(await screen.findByText('No requests match your search.')).toBeInTheDocument()
+  })
+
+  it('pages long queues and shows a long thread as its latest messages', async () => {
+    api.incidents.list.mockResolvedValue(pageOf([pending], 25))
+    api.messages.list.mockResolvedValue(threadOf([message()], 7, true))
+    const onOpen = renderPage()
+    expect(await screen.findByText('1–10 of 25')).toBeInTheDocument()
+    fireEvent.click(await screen.findByText('Thread (7 messages)'))
+    fireEvent.click(await screen.findByText('Open the ticket'))
+    expect(onOpen).toHaveBeenCalledWith(12)
+    fireEvent.click(screen.getByTitle('3'))
+    await waitFor(() => expect(api.incidents.list).toHaveBeenLastCalledWith({ ...DEFAULT_QUERY, page: 3 }))
   })
 })

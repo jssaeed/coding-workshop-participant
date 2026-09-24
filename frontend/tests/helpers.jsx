@@ -10,7 +10,10 @@
 // resetApi() gives every function a sensible default (empty lists, zero
 // counts) so a page renders; a test then overrides what it cares about:
 //
-//   api.incidents.list.mockResolvedValue([ticket({ id: 12 })])
+//   api.incidents.list.mockResolvedValue(pageOf([ticket({ id: 12 })]))
+//
+// List endpoints answer one page: pageOf() and threadOf() build the shapes
+// GET /api/incidents, /api/users and /api/messages return.
 
 import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { vi } from 'vitest'
@@ -58,6 +61,16 @@ export function message(overrides = {}) {
   }
 }
 
+// { items, total, page, limit, pages }: one page of a paged list
+export function pageOf(items, total = items.length, page = 1, limit = 25) {
+  return { items, total, page, limit, pages: Math.max(1, Math.ceil(total / limit)) }
+}
+
+// { items, total, hasMore }: one page of a ticket's thread
+export function threadOf(items, total = items.length, hasMore = false) {
+  return { items, total, hasMore }
+}
+
 export const zeroStats = {
   total: 0,
   byStatus: { open: 0, assigned: 0, in_progress: 0, blocked: 0, resolved: 0, closed: 0 },
@@ -75,7 +88,7 @@ export function mockApiModule() {
     users: { branches: fn(), signup: fn(), login: fn(), me: fn(), logout: fn(), list: fn(), updateRole: fn(), remove: fn() },
     buildings: { list: fn(), create: fn(), update: fn(), remove: fn() },
     incidents: { create: fn(), list: fn(), get: fn(), assign: fn(), updateStatus: fn(), decideApproval: fn(), updatePriority: fn(), updateLocation: fn() },
-    stats: { overview: fn(), locations: fn(), mine: fn() },
+    stats: { overview: fn(), locations: fn(), mine: fn(), engineers: fn() },
     messages: { list: fn(), create: fn() },
     inbox: { list: fn(), count: fn(), markRead: fn(), markAllRead: fn() },
   }
@@ -91,16 +104,17 @@ export function resetApi(api) {
   api.getStoredUser.mockReturnValue(null)
   api.getRefreshToken.mockReturnValue(null)
   api.users.branches.mockResolvedValue([{ id: 2, name: 'Miami' }, branch])
-  api.users.list.mockResolvedValue([])
+  api.users.list.mockResolvedValue(pageOf([]))
   api.users.me.mockResolvedValue(employee)
   api.users.logout.mockResolvedValue(null)
   api.users.remove.mockResolvedValue(null)
   api.buildings.list.mockResolvedValue([building])
-  api.incidents.list.mockResolvedValue([])
+  api.incidents.list.mockResolvedValue(pageOf([]))
   api.stats.mine.mockResolvedValue({ reported: zeroStats, assigned: null })
   api.stats.overview.mockResolvedValue(zeroStats)
   api.stats.locations.mockResolvedValue({ level: 'building', items: [] })
-  api.messages.list.mockResolvedValue([])
+  api.stats.engineers.mockResolvedValue([])
+  api.messages.list.mockResolvedValue(threadOf([]))
   api.inbox.list.mockResolvedValue({ unread: 0, items: [] })
   api.inbox.count.mockResolvedValue({ unread: 0 })
   api.inbox.markRead.mockResolvedValue({ incidentId: 12, lastReadAt: '2026-09-22T16:00:00Z', unread: 0 })

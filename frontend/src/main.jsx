@@ -1,6 +1,7 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { ConfigProvider } from 'antd'
+import { HashRouter } from 'react-router-dom'
 import './index.css'
 import App from './App.jsx'
 
@@ -30,7 +31,11 @@ const theme = {
 createRoot(document.getElementById('root')).render(
   <StrictMode>
     <ConfigProvider theme={theme}>
-      <App />
+      {/* Hash URLs (/#/tickets/12) so a refresh works on any page without
+          server-side routing: the site is static files on CloudFront. */}
+      <HashRouter>
+        <App />
+      </HashRouter>
     </ConfigProvider>
   </StrictMode>,
 )

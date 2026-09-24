@@ -1,11 +1,15 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('../../src/services/api', async () => (await import('../helpers')).mockApiModule())
 
 import * as api from '../../src/services/api'
 import UsersPage from '../../src/pages/UsersPage'
-import { admin, chooseOption, dbAdmin, employee, engineer, openedOptions, resetApi, rowContaining } from '../helpers'
+import { admin, chooseOption, dbAdmin, employee, engineer, openedOptions, pageOf, resetApi, rowContaining } from '../helpers'
+
+// What the page asks the server for before anyone touches a filter
+const DEFAULT_QUERY = { role: '', branchId: '', q: '', sort: 'name', order: 'asc', page: 1, limit: 25 }
 
 const miami = { id: 2, name: 'Miami' }
 const accounts = [
@@ -21,7 +25,7 @@ function names() {
 }
 
 async function renderPage(user = admin) {
-  api.users.list.mockResolvedValue(accounts)
+  api.users.list.mockResolvedValue(pageOf(accounts))
   render(<UsersPage user={user} />)
   await screen.findByText(engineer.email)
 }
@@ -29,29 +33,43 @@ async function renderPage(user = admin) {
 beforeEach(() => resetApi(api))
 
 describe('UsersPage', () => {
-  it('lists accounts by name and marks the caller', async () => {
+  it('lists the page the server sends, by name, and marks the caller', async () => {
     await renderPage()
-    expect(names()).toEqual(['Ana Lopez', 'Bob Stone', 'Dee Admin', 'Root', 'Zed Far'])
+    expect(api.users.list).toHaveBeenCalledWith(DEFAULT_QUERY)
+    expect(names()).toEqual(['Bob Stone', 'Dee Admin', 'Ana Lopez', 'Root', 'Zed Far']) // the server's order
     expect(within(rowContaining('Dee Admin')).getByText('you')).toBeInTheDocument()
     expect(screen.getByText('· Princeton-Plainsboro')).toBeInTheDocument()
   })
 
-  it('can sort by role, newest and oldest', async () => {
+  it('asks the server to sort by role, newest and oldest', async () => {
     await renderPage()
     await chooseOption(screen.getAllByRole('combobox')[1], 'Role')
-    expect(names()).toEqual(['Root', 'Dee Admin', 'Bob Stone', 'Ana Lopez', 'Zed Far'])
+    await waitFor(() => expect(api.users.list).toHaveBeenLastCalledWith({ ...DEFAULT_QUERY, sort: 'role', order: 'asc' }))
     await chooseOption(screen.getAllByRole('combobox')[1], 'Newest accounts first')
-    expect(names()[0]).toBe('Ana Lopez')
+    await waitFor(() => expect(api.users.list).toHaveBeenLastCalledWith({ ...DEFAULT_QUERY, sort: 'created', order: 'desc' }))
     await chooseOption(screen.getAllByRole('combobox')[1], 'Oldest accounts first')
-    expect(names()[0]).toBe('Root')
+    await waitFor(() => expect(api.users.list).toHaveBeenLastCalledWith({ ...DEFAULT_QUERY, sort: 'created', order: 'asc' }))
   })
 
-  it('filters by role', async () => {
+  it('filters by role and searches on the server', async () => {
     await renderPage()
     await chooseOption(screen.getAllByRole('combobox')[0], 'Engineer')
-    expect(names()).toEqual(['Bob Stone'])
-    await chooseOption(screen.getAllByRole('combobox')[0], 'DB admin')
-    expect(names()).toEqual(['Root'])
+    await waitFor(() => expect(api.users.list).toHaveBeenLastCalledWith({ ...DEFAULT_QUERY, role: 'engineer' }))
+    await userEvent.type(screen.getByPlaceholderText('Search name or email'), 'ana')
+    await waitFor(() => expect(api.users.list).toHaveBeenLastCalledWith({ ...DEFAULT_QUERY, role: 'engineer', q: 'ana' }))
+    expect(api.users.list).toHaveBeenCalledTimes(3) // load, role, one search for the whole word
+  })
+
+  it('turns pages and goes back to page 1 when a filter changes', async () => {
+    api.users.list.mockResolvedValue(pageOf(accounts, 60))
+    render(<UsersPage user={admin} />)
+    expect(await screen.findByText('1–25 of 60')).toBeInTheDocument()
+    fireEvent.click(screen.getByTitle('2'))
+    await waitFor(() => expect(api.users.list).toHaveBeenLastCalledWith({ ...DEFAULT_QUERY, page: 2 }))
+    const calls = api.users.list.mock.calls.length
+    await chooseOption(screen.getAllByRole('combobox')[0], 'Employee')
+    await waitFor(() => expect(api.users.list).toHaveBeenLastCalledWith({ ...DEFAULT_QUERY, role: 'employee', page: 1 }))
+    expect(api.users.list).toHaveBeenCalledTimes(calls + 1)
   })
 
   it('a facility admin cannot touch themselves or a db admin', async () => {
@@ -74,8 +92,8 @@ describe('UsersPage', () => {
     expect(within(rowContaining('Dee Admin')).getByRole('combobox')).toBeEnabled()
     expect(await openedOptions(within(rowContaining('Bob Stone')).getByRole('combobox'))).toContain('DB admin')
 
-    await chooseOption(screen.getAllByRole('combobox')[0], 'Miami')
-    expect(names()).toEqual(['Zed Far'])
+    await chooseOption(screen.getAllByRole('combobox')[0], 'Miami') // from users.branches()
+    await waitFor(() => expect(api.users.list).toHaveBeenLastCalledWith({ ...DEFAULT_QUERY, branchId: 2 }))
   })
 
   it('changes a role and confirms it', async () => {
