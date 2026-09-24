@@ -57,10 +57,16 @@ def email_exists(email):
     return row is not None
 
 
-def list_all(branch_id, role=None):
-    """Return every user at one branch, newest first. Optionally only one role."""
-    conditions = ["u.branch_id = %s"]
-    params = [branch_id]
+def list_all(branch_id=None, role=None):
+    """
+    Return users newest first: those at one branch, or every branch when
+    branch_id is None (the db admin's view). Optionally only one role.
+    """
+    conditions = ["TRUE"]
+    params = []
+    if branch_id is not None:
+        conditions.append("u.branch_id = %s")
+        params.append(branch_id)
     if role is not None:
         conditions.append("u.role = %s")
         params.append(role)

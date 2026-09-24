@@ -1,6 +1,6 @@
 import { Button, Card, Col, Row, Space, Typography } from 'antd'
 import { CheckCircleOutlined, FileTextOutlined, UserSwitchOutlined } from '@ant-design/icons'
-import { isAdmin, isStaff } from '../services/format'
+import { isAdmin, isDbAdmin, isStaff } from '../services/format'
 
 const { Title, Paragraph, Text } = Typography
 
@@ -32,6 +32,7 @@ export default function HomePage({ user, onNavigate }) {
   ]
   if (isStaff(user)) abilities.push('Work through the tickets assigned to you, updating status and priority')
   if (isAdmin(user)) abilities.push('See every ticket, assign engineers, manage accounts and define buildings')
+  if (isDbAdmin(user)) abilities.push('Manage accounts and roles across every branch, and run the database migration')
 
   return (
     <div>

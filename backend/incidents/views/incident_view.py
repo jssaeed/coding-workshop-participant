@@ -40,9 +40,24 @@ def serialize(row):
             "email": row["assignee_email"],
         }
 
+    # An engineer's request to block or resolve, waiting for a facility admin
+    if row["pending_status"] is None:
+        pending = None
+    else:
+        pending = {
+            "status": row["pending_status"],
+            "note": row["pending_note"],
+            "requestedAt": row["pending_requested_at"],
+            "requestedBy": (
+                None if row["pending_requested_by"] is None
+                else {"id": row["pending_requested_by"], "name": row["pending_requester_name"]}
+            ),
+        }
+
     return {
         "id": row["id"],
         "title": row["title"],
+        "pendingApproval": pending,
         "description": row["description"],
         "status": row["status"],
         "priority": row["priority"],

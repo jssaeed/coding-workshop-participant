@@ -149,7 +149,9 @@ export const incidents = {
   list: (filters) => request('GET', '/incidents', null, filters),
   get: (id) => request('GET', `/incidents/${id}`),
   assign: (id, assigneeId) => request('PUT', `/incidents/${id}/assign`, { assigneeId }),
-  updateStatus: (id, status) => request('PUT', `/incidents/${id}/status`, { status }),
+  // For an engineer, blocked/resolved become a request that an admin must approve
+  updateStatus: (id, status, note) => request('PUT', `/incidents/${id}/status`, { status, note }),
+  decideApproval: (id, decision, note) => request('PUT', `/incidents/${id}/approval`, { decision, note }),
   updatePriority: (id, priority) => request('PUT', `/incidents/${id}/priority`, { priority }),
   // location is { buildingId, floor, room } or null to clear it
   updateLocation: (id, location) => request('PUT', `/incidents/${id}/location`, { location }),

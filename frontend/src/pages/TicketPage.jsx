@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react'
 import {
-  Avatar, Button, Card, Descriptions, Divider, Form, Input, InputNumber, Select, Space, Tag, Typography,
+  Alert as AntAlert, Avatar, Button, Card, Descriptions, Divider, Form, Input, InputNumber, Select, Space, Tag, Typography,
 } from 'antd'
-import { ArrowLeftOutlined, SendOutlined } from '@ant-design/icons'
+import { ArrowLeftOutlined, CheckOutlined, CloseOutlined, SendOutlined } from '@ant-design/icons'
 import { buildings, inbox, incidents, messages, users } from '../services/api'
 import {
-  PRIORITIES, PRIORITY_COLORS, STATUSES, STATUS_COLORS,
+  APPROVAL_STATUSES, PRIORITIES, PRIORITY_COLORS, STATUSES, STATUS_COLORS,
   floorOptions, formatDate, formatLocation, initial, isAdmin, isStaff, label, personName, range, roomLabel, roomsOnFloor,
 } from '../services/format'
 import Alert from '../components/Alert'
@@ -25,6 +25,8 @@ export default function TicketPage({ id, user, onBack, setUnread }) {
   const [staff, setStaff] = useState([]) // engineers and admins, for the assign dropdown
   const [assignee, setAssignee] = useState('') // '' means unassigned
   const [status, setStatus] = useState('')
+  const [statusNote, setStatusNote] = useState('') // optional reason, shown on the thread
+  const [decisionNote, setDecisionNote] = useState('') // admin's reason when approving/rejecting
   const [priority, setPriority] = useState(3)
   // Location form (admin only): buildings for the dropdown, plus the chosen place
   const [buildingList, setBuildingList] = useState([])
@@ -119,6 +121,9 @@ export default function TicketPage({ id, user, onBack, setUnread }) {
   // The assigned engineer, or any admin, can change status and priority
   const canChangeStatus = isAdmin(user) || (ticket.assignedTo && ticket.assignedTo.id === user.id)
   const isClosed = ticket.status === 'closed'
+  // An engineer choosing blocked/resolved is asking, not deciding
+  const isRequest = !isAdmin(user) && APPROVAL_STATUSES.includes(status)
+  const pending = ticket.pendingApproval
 
   // True when the location form matches what the ticket already has
   const place = ticket.location
@@ -134,6 +139,39 @@ export default function TicketPage({ id, user, onBack, setUnread }) {
       </Button>
 
       <TicketProgress status={ticket.status} />
+
+      {pending && (
+        <AntAlert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message={`Awaiting approval: ${pending.requestedBy ? pending.requestedBy.name : 'An engineer'} asked to mark this ticket ${label(pending.status).toLowerCase()}`}
+          description={
+            <div>
+              {pending.note && <div>Reason: {pending.note}</div>}
+              <div className="muted">Requested {formatDate(pending.requestedAt)}</div>
+              {isAdmin(user) && (
+                <Space wrap style={{ marginTop: 8 }}>
+                  <Input
+                    placeholder="Note for the thread (optional)"
+                    value={decisionNote}
+                    onChange={(e) => setDecisionNote(e.target.value)}
+                    style={{ width: 280 }}
+                  />
+                  <Button type="primary" icon={<CheckOutlined />} loading={busy}
+                          onClick={() => runAction(() => incidents.decideApproval(id, 'approve', decisionNote || undefined))}>
+                    Approve
+                  </Button>
+                  <Button danger icon={<CloseOutlined />} loading={busy}
+                          onClick={() => runAction(() => incidents.decideApproval(id, 'reject', decisionNote || undefined))}>
+                    Reject
+                  </Button>
+                </Space>
+              )}
+            </div>
+          }
+        />
+      )}
 
       <Card
         title={
@@ -212,12 +250,19 @@ export default function TicketPage({ id, user, onBack, setUnread }) {
                     }))}
                   />
                 </Form.Item>
+                <Form.Item label="Note (optional)">
+                  <Input value={statusNote} onChange={(e) => setStatusNote(e.target.value)} style={{ width: 220 }}
+                         placeholder={isRequest ? 'Why? Shown to the admin' : ''} />
+                </Form.Item>
                 <Button
-                  onClick={() => runAction(() => incidents.updateStatus(id, status))}
+                  onClick={() => runAction(async () => {
+                    await incidents.updateStatus(id, status, statusNote || undefined)
+                    setStatusNote('')
+                  })}
                   loading={busy}
-                  disabled={status === ticket.status}
+                  disabled={status === ticket.status || (pending && pending.status === status)}
                 >
-                  Update status
+                  {isRequest ? `Request ${label(status).toLowerCase()}` : 'Update status'}
                 </Button>
               </Form>
             )}

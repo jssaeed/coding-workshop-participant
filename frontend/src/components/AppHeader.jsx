@@ -1,20 +1,25 @@
 import { Avatar, Badge, Button, Dropdown, Layout, Menu, Space, Typography } from 'antd'
 import { BellOutlined, LogoutOutlined, UserOutlined } from '@ant-design/icons'
-import { initial, isAdmin, label } from '../services/format'
+import { canManageUsers, initial, isAdmin, label } from '../services/format'
 
 const { Header } = Layout
 
 // The bar at the top of every page: the ACME Inc brand on the left, the
 // page menu in the middle, and the inbox bell + account avatar on the right.
 // When nobody is signed in only the brand shows.
-export default function AppHeader({ user, page, unread, onNavigate, onLogout }) {
+export default function AppHeader({ user, page, unread, pendingCount = 0, onNavigate, onLogout }) {
   const menuItems = [
     { key: 'home', label: 'Home' },
     { key: 'tickets', label: 'Tickets' },
   ]
   if (user && isAdmin(user)) {
+    menuItems.push({ key: 'approvals', label: pendingCount > 0 ? `Approvals (${pendingCount})` : 'Approvals' })
     menuItems.push({ key: 'stats', label: 'Statistics' })
+  }
+  if (user && canManageUsers(user)) {
     menuItems.push({ key: 'users', label: 'Employee directory' })
+  }
+  if (user && isAdmin(user)) {
     menuItems.push({ key: 'buildings', label: 'Buildings' })
   }
 

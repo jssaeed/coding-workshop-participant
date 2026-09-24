@@ -3,11 +3,15 @@
  */
 
 export const STATUSES = ['open', 'assigned', 'in_progress', 'blocked', 'resolved', 'closed']
-export const ROLES = ['employee', 'engineer', 'facility_admin']
+export const ROLES = ['employee', 'engineer', 'facility_admin', 'db_admin']
+// The roles a facility admin may hand out; only a db admin can hand out db_admin
+export const BRANCH_ROLES = ['employee', 'engineer', 'facility_admin']
 
 // Most senior first, for sorting the employee directory by role
-export const ROLE_ORDER = { facility_admin: 0, engineer: 1, employee: 2 }
+export const ROLE_ORDER = { db_admin: 0, facility_admin: 1, engineer: 2, employee: 3 }
 export const PRIORITIES = [1, 2, 3, 4, 5]
+// Statuses an engineer can only request; a facility admin approves them
+export const APPROVAL_STATUSES = ['blocked', 'resolved']
 
 // Chart colours for each status, one hue per status so a status always has
 // the same colour wherever it is drawn. Checked for colour-blind safety.
@@ -41,6 +45,7 @@ export const PRIORITY_COLORS = {
 // "in_progress" -> "In progress", "facility_admin" -> "Facility admin"
 export function label(value) {
   if (!value) return ''
+  if (value === 'db_admin') return 'DB admin'
   const words = value.replaceAll('_', ' ')
   return words.charAt(0).toUpperCase() + words.slice(1)
 }
@@ -112,4 +117,14 @@ export function isAdmin(user) {
 
 export function isStaff(user) {
   return user.role === 'facility_admin' || user.role === 'engineer'
+}
+
+export function isDbAdmin(user) {
+  return user.role === 'db_admin'
+}
+
+// Who gets the Employee directory: facility admins (their branch) and the
+// db admin (every branch)
+export function canManageUsers(user) {
+  return isAdmin(user) || isDbAdmin(user)
 }

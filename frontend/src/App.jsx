@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Layout } from 'antd'
-import { clearSession, getStoredUser, getToken, inbox, saveSession, users } from './services/api'
-import { isAdmin } from './services/format'
+import { clearSession, getStoredUser, getToken, inbox, incidents, saveSession, users } from './services/api'
+import { canManageUsers, isAdmin } from './services/format'
 import AppHeader from './components/AppHeader'
 import AppFooter from './components/AppFooter'
 import LoginPage from './pages/LoginPage'
@@ -12,6 +12,7 @@ import InboxPage from './pages/InboxPage'
 import UsersPage from './pages/UsersPage'
 import BuildingsPage from './pages/BuildingsPage'
 import StatsPage from './pages/StatsPage'
+import ApprovalsPage from './pages/ApprovalsPage'
 import './App.css'
 
 const { Content } = Layout
@@ -31,6 +32,8 @@ function App() {
 
   // Number shown on the inbox bell
   const [unread, setUnread] = useState(0)
+  // Number of requests waiting for a facility admin (shown on the Approvals tab)
+  const [pendingCount, setPendingCount] = useState(0)
 
   function handleLogin(loggedInUser, token, refreshToken) {
     saveSession(loggedInUser, token, refreshToken)
@@ -60,6 +63,9 @@ function App() {
 
     function poll() {
       inbox.count().then((data) => setUnread(data.unread)).catch(() => {})
+      if (isAdmin(user)) {
+        incidents.list({ scope: 'pending' }).then((list) => setPendingCount(list.length)).catch(() => {})
+      }
 
       users.me().then((current) => {
         if (current.role !== user.role || current.name !== user.name) {
@@ -95,8 +101,10 @@ function App() {
         )
       case 'stats':
         return isAdmin(user) ? <StatsPage /> : <HomePage user={user} onNavigate={setPage} />
+      case 'approvals':
+        return isAdmin(user) ? <ApprovalsPage onOpen={openTicket} /> : <HomePage user={user} onNavigate={setPage} />
       case 'users':
-        return isAdmin(user) ? <UsersPage user={user} /> : <HomePage user={user} onNavigate={setPage} />
+        return canManageUsers(user) ? <UsersPage user={user} /> : <HomePage user={user} onNavigate={setPage} />
       case 'buildings':
         return isAdmin(user) ? <BuildingsPage user={user} /> : <HomePage user={user} onNavigate={setPage} />
       default:
@@ -110,6 +118,7 @@ function App() {
         user={user}
         page={page}
         unread={unread}
+        pendingCount={pendingCount}
         onNavigate={setPage}
         onLogout={handleLogout}
       />

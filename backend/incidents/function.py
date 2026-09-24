@@ -7,6 +7,7 @@ Incidents service: tickets.
     PUT  /api/incidents/{id}/assign   assign an engineer (admin)
     PUT  /api/incidents/{id}/status   change the status (assignee or admin)
     PUT  /api/incidents/{id}/priority change the priority (assignee or admin)
+    PUT  /api/incidents/{id}/approval approve/reject a blocked/resolved request (admin)
     PUT  /api/incidents/{id}/location move the ticket to another place (admin)
     GET  /api/incidents/stats/overview   tickets by status (admin)
     GET  /api/incidents/stats/locations  tickets per building / floor / room (admin)
@@ -72,6 +73,12 @@ def route(event):
     if len(segments) == 2 and segments[1] == "status":
         if method == "PUT":
             return incident_controller.update_status(event, incident_id)
+        return method_not_allowed(method)
+
+    # /api/incidents/{id}/approval
+    if len(segments) == 2 and segments[1] == "approval":
+        if method == "PUT":
+            return incident_controller.decide_approval(event, incident_id)
         return method_not_allowed(method)
 
     # /api/incidents/{id}/priority

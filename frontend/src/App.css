@@ -533,3 +533,12 @@
   padding: 4px 0;
   border-bottom: 1px solid #f0f0f0;
 }
+
+/* --- approvals page --------------------------------------------------- */
+
+.approval-reason {
+  padding: 8px 12px;
+  border-left: 3px solid #1e3a5f;
+  background: #f5f7fb;
+  margin: 0 0 8px;
+}

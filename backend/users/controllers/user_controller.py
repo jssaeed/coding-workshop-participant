@@ -149,46 +149,62 @@ def me(event):
     return ok(user_view.serialize(user))
 
 
-def get_user_in_my_branch(caller, user_id):
+def get_user_i_may_manage(caller, user_id):
     """
-    Load a user an admin wants to manage, or raise.
+    Load a user the caller wants to manage, or raise.
 
-    404 if there is no such user. 403 if they belong to another branch: a
-    facility admin only manages the people at their own site.
+    404 if there is no such user. A db admin may manage anyone. A facility
+    admin only manages the people at their own branch (403 otherwise), and
+    never a db admin (403).
     """
     user = user_model.find_by_id(user_id)
     if user is None:
         raise HttpError(404, "User not found")
+    if auth.is_db_admin(caller):
+        return user
     if user["branch_id"] != caller["branch_id"]:
         raise HttpError(403, "That user belongs to another branch")
+    if user["role"] == auth.ROLE_DB_ADMIN:
+        raise HttpError(403, "Only a db admin can manage a db admin account")
     return user
 
 
 def list_users(event):
-    """GET /api/users?role=engineer - the accounts at the caller's branch. Admin only."""
+    """
+    GET /api/users?role=engineer - the accounts the caller may manage.
+
+    A facility admin sees their own branch; a db admin sees every branch.
+    """
     caller = auth.current_user(event)
-    auth.require_role(caller, [auth.ROLE_ADMIN])
+    auth.require_role(caller, [auth.ROLE_ADMIN, auth.ROLE_DB_ADMIN])
 
     role = query_params(event).get("role")
     if role is not None and role not in auth.ALL_ROLES:
         raise HttpError(400, f"'role' must be one of: {', '.join(auth.ALL_ROLES)}")
 
-    users = user_model.list_all(caller["branch_id"], role)
+    branch_id = None if auth.is_db_admin(caller) else caller["branch_id"]
+    users = user_model.list_all(branch_id, role)
     return ok(user_view.serialize_many(users))
 
 
 def update_role(event, user_id):
-    """PUT /api/users/{id}/role - promote or demote. Admin only."""
+    """
+    PUT /api/users/{id}/role - promote or demote.
+
+    A db admin can give anyone any role. A facility admin can give people
+    at their branch any role except db admin.
+    """
     caller = auth.current_user(event)
-    auth.require_role(caller, [auth.ROLE_ADMIN])
+    auth.require_role(caller, [auth.ROLE_ADMIN, auth.ROLE_DB_ADMIN])
 
     body = json_body(event)
-    role = validation.one_of(body, "role", auth.ALL_ROLES)
+    allowed_roles = auth.ALL_ROLES if auth.is_db_admin(caller) else auth.BRANCH_ROLES
+    role = validation.one_of(body, "role", allowed_roles)
 
     if user_id == caller["id"]:
         raise HttpError(403, "You cannot change your own role")
 
-    before = get_user_in_my_branch(caller, user_id)
+    before = get_user_i_may_manage(caller, user_id)
 
     # Taking power away must also end the user's sessions: their current
     # access token dies within minutes and cannot be renewed. A promotion
@@ -205,14 +221,14 @@ def update_role(event, user_id):
 
 
 def delete_user(event, user_id):
-    """DELETE /api/users/{id} - remove an account. Admin only."""
+    """DELETE /api/users/{id} - remove an account. Facility admin (own branch) or db admin."""
     caller = auth.current_user(event)
-    auth.require_role(caller, [auth.ROLE_ADMIN])
+    auth.require_role(caller, [auth.ROLE_ADMIN, auth.ROLE_DB_ADMIN])
 
     if user_id == caller["id"]:
         raise HttpError(403, "You cannot delete your own account")
 
-    get_user_in_my_branch(caller, user_id)
+    get_user_i_may_manage(caller, user_id)
 
     # Their tickets and messages are kept and shown as "Deleted user".
     user_model.delete(user_id)

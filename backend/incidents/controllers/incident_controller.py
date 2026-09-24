@@ -7,6 +7,9 @@ Incident controller: the rules for tickets.
 - The assigned engineer (or an admin) can change a ticket's status and priority.
 - Assigning an open ticket moves it to "assigned"; unassigning an "assigned"
   ticket moves it back to "open". "open" always means nobody is on it.
+- An engineer cannot set "blocked" or "resolved" by themselves. Their
+  request is recorded on the ticket and a facility admin approves or
+  rejects it. Admins set those statuses directly.
 
 Status, priority, assignment and location changes also add a message to the
 ticket, so the thread shows the history and the change appears in other
@@ -147,6 +150,7 @@ def list_incidents(event):
     ?scope=mine        tickets I filed (the default)
     ?scope=assigned    tickets assigned to me (engineer or admin)
     ?scope=unassigned  tickets with no engineer yet (admin)
+    ?scope=pending     tickets waiting for an approval (admin)
     ?scope=all         every ticket (admin)
     ?status=open and ?priority=2 narrow the list further.
     """
@@ -154,8 +158,8 @@ def list_incidents(event):
     params = query_params(event)
 
     scope = params.get("scope", "mine")
-    if scope not in ["mine", "assigned", "unassigned", "all"]:
-        raise HttpError(400, "'scope' must be one of: mine, assigned, unassigned, all")
+    if scope not in ["mine", "assigned", "unassigned", "pending", "all"]:
+        raise HttpError(400, "'scope' must be one of: mine, assigned, unassigned, pending, all")
 
     status = params.get("status")
     if status is not None and status not in incident_model.STATUSES:
@@ -175,6 +179,9 @@ def list_incidents(event):
     elif scope == "unassigned":
         auth.require_role(caller, [auth.ROLE_ADMIN])
         incidents = incident_model.list_unassigned()
+    elif scope == "pending":
+        auth.require_role(caller, [auth.ROLE_ADMIN])
+        incidents = incident_model.search(status=status, priority=priority, pending=True)
     else:  # "all"
         auth.require_role(caller, [auth.ROLE_ADMIN])
         incidents = incident_model.search(status=status, priority=priority)
@@ -233,15 +240,33 @@ def assign_incident(event, incident_id):
 
 
 def update_status(event, incident_id):
-    """PUT /api/incidents/{id}/status - move the ticket along. Assignee or admin."""
+    """
+    PUT /api/incidents/{id}/status - move the ticket along. Assignee or admin.
+
+    Body: {"status": "...", "note": "optional text"}. When an engineer asks
+    for "blocked" or "resolved" the status does not change yet: the request
+    is stored on the ticket for a facility admin to approve (see
+    decide_approval). Any other change by anyone drops a pending request.
+    """
     caller = auth.current_user(event)
     body = json_body(event)
     status = validation.one_of(body, "status", incident_model.STATUSES)
+    note = validation.optional_string(body, "note", max_length=1000)
 
     with transaction():
         incident = get_incident_for_staff_change(caller, incident_id)
         if incident["status"] == status:
             raise HttpError(400, f"Incident is already {status_label(status)}")
+
+        if status in incident_model.APPROVAL_STATUSES and not auth.is_admin(caller):
+            if incident["pending_status"] == status:
+                raise HttpError(400, f"A request to mark this ticket {status_label(status)} is already waiting for approval")
+            message = f"Ticket #{incident_id}: requested {status_label(status)}, awaiting facility admin approval"
+            if note:
+                message += f" - {note}"
+            incident = incident_model.request_status(incident_id, status, caller["id"], note, caller["id"], message)
+            logger.info("Incident %s: %s requested %s", incident_id, caller["id"], status)
+            return ok(incident_view.serialize(incident))
 
         # "open" means nobody is on the ticket and "assigned" means someone
         # is, so neither can be set by hand against the actual assignment.
@@ -250,10 +275,51 @@ def update_status(event, incident_id):
         if status == "assigned" and incident["assigned_to"] is None:
             raise HttpError(400, "Assign an engineer to set the ticket to assigned")
 
-        note = f"Ticket #{incident_id}: status changed to {status_label(status)}"
-        incident = incident_model.update_status(incident_id, status, caller["id"], note)
+        message = f"Ticket #{incident_id}: status changed to {status_label(status)}"
+        if note:
+            message += f" - {note}"
+        incident = incident_model.update_status(incident_id, status, caller["id"], message)
 
     logger.info("Incident %s status changed to %s by %s", incident_id, status, caller["id"])
+    return ok(incident_view.serialize(incident))
+
+
+def decide_approval(event, incident_id):
+    """
+    PUT /api/incidents/{id}/approval - approve or reject an engineer's
+    request to block or resolve. Admin only.
+
+    Body: {"decision": "approve" | "reject", "note": "optional text"}.
+    Approving applies the requested status; rejecting just clears the
+    request. Either way a message records who decided and why.
+    """
+    caller = auth.current_user(event)
+    auth.require_role(caller, [auth.ROLE_ADMIN])
+
+    body = json_body(event)
+    decision = validation.one_of(body, "decision", ["approve", "reject"])
+    note = validation.optional_string(body, "note", max_length=1000)
+
+    with transaction():
+        incident = incident_model.find_basic(incident_id, lock=True)
+        if incident is None:
+            raise HttpError(404, "Incident not found")
+        if incident["pending_status"] is None:
+            raise HttpError(400, "Nothing is waiting for approval on this ticket")
+
+        wanted = incident["pending_status"]
+        if decision == "approve":
+            message = f"Ticket #{incident_id}: status changed to {status_label(wanted)} (approved)"
+            if note:
+                message += f" - {note}"
+            incident = incident_model.update_status(incident_id, wanted, caller["id"], message)
+        else:
+            message = f"Ticket #{incident_id}: request to mark {status_label(wanted)} rejected"
+            if note:
+                message += f" - {note}"
+            incident = incident_model.clear_request(incident_id, caller["id"], message)
+
+    logger.info("Incident %s: %s %sd %s", incident_id, caller["id"], decision, wanted)
     return ok(incident_view.serialize(incident))
 
 

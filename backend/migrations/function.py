@@ -22,10 +22,12 @@ list, because CREATE TABLE IF NOT EXISTS skips tables that already exist.
 """
 
 import logging
+import os
 
+from lib.auth import ROLE_DB_ADMIN, current_user, hash_password, require_role
 from lib.database import get_connection
-from lib.request import http_method
-from lib.responses import json_response, method_not_allowed
+from lib.request import http_method, json_body, path_segments
+from lib.responses import HttpError, json_response, method_not_allowed
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -73,7 +75,7 @@ SCHEMA = [
         password_hash TEXT        NOT NULL,
         name          TEXT        NOT NULL CHECK (name <> ''),
         role          TEXT        NOT NULL DEFAULT 'employee'
-                                  CHECK (role IN ('facility_admin', 'engineer', 'employee')),
+                                  CHECK (role IN ('db_admin', 'facility_admin', 'engineer', 'employee')),
         branch_id     BIGINT      NOT NULL REFERENCES branches (id) ON DELETE RESTRICT,
         created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -187,9 +189,20 @@ SCHEMA = [
         assigned_to BIGINT      REFERENCES users (id) ON DELETE SET NULL,
         created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        resolved_at TIMESTAMPTZ
+        resolved_at TIMESTAMPTZ,
+        -- An engineer cannot set "blocked" or "resolved" alone: the wish is
+        -- recorded here until a facility admin approves or rejects it.
+        pending_status       TEXT CHECK (pending_status IN ('blocked', 'resolved')),
+        pending_requested_by BIGINT REFERENCES users (id) ON DELETE SET NULL,
+        pending_requested_at TIMESTAMPTZ,
+        pending_note         TEXT
     )
     """,
+    # Upgrade for incidents tables made before approvals existed (no-ops after).
+    "ALTER TABLE incidents ADD COLUMN IF NOT EXISTS pending_status TEXT CHECK (pending_status IN ('blocked', 'resolved'))",
+    "ALTER TABLE incidents ADD COLUMN IF NOT EXISTS pending_requested_by BIGINT REFERENCES users (id) ON DELETE SET NULL",
+    "ALTER TABLE incidents ADD COLUMN IF NOT EXISTS pending_requested_at TIMESTAMPTZ",
+    "ALTER TABLE incidents ADD COLUMN IF NOT EXISTS pending_note TEXT",
     # Indexes make the ticket list filters fast.
     "CREATE INDEX IF NOT EXISTS incidents_status_idx      ON incidents (status)",
     "CREATE INDEX IF NOT EXISTS incidents_priority_idx    ON incidents (priority)",
@@ -273,6 +286,8 @@ def apply_schema():
         add_assigned_status(cursor)
         add_branches_to_users(cursor)
         allow_basement_floors(cursor)
+        add_db_admin_role(cursor)
+        ensure_db_admin_account(cursor)
     connection.commit()
 
 
@@ -303,6 +318,9 @@ def apply_schema():
 # locations.floor from ">= 1" to "<> 0" so negative floor numbers are allowed.
 # (The buildings changes for branches and basements are plain idempotent SQL
 # in SCHEMA, because ADD COLUMN IF NOT EXISTS needs no "if".)
+#
+# The db_admin role came last: add_db_admin_role() widens the role CHECK on
+# an existing users table.
 #
 # All of these functions do nothing on a database that is already up to
 # date, and on a brand-new project they would not exist at all.
@@ -449,6 +467,128 @@ def allow_basement_floors(cursor):
     cursor.execute("ALTER TABLE locations ADD CONSTRAINT locations_floor_check CHECK (floor <> 0)")
 
 
+def add_db_admin_role(cursor):
+    """Allow role = 'db_admin' on an existing users table."""
+    cursor.execute(
+        "SELECT pg_get_constraintdef(oid) AS rule FROM pg_constraint WHERE conname = 'users_role_check'"
+    )
+    row = cursor.fetchone()
+    if row is None or "db_admin" in row["rule"]:
+        return  # already allowed
+
+    logger.info("Adding 'db_admin' to the allowed roles")
+    cursor.execute("ALTER TABLE users DROP CONSTRAINT users_role_check")
+    cursor.execute(
+        """
+        ALTER TABLE users
+        ADD CONSTRAINT users_role_check
+        CHECK (role IN ('db_admin', 'facility_admin', 'engineer', 'employee'))
+        """
+    )
+
+
+# ---------------------------------------------------------------------------
+# The db admin account
+# ---------------------------------------------------------------------------
+#
+# Every deployment gets one db admin account, created (or put back) by the
+# migration. It manages roles across every branch and is the only account
+# allowed to run this migration once it exists.
+#
+# The password is fixed because this is a workshop project. In a real
+# system the first admin would be created by someone with direct database
+# access, and the password would come from a secret, never from code.
+
+DB_ADMIN_EMAIL = "admin@admin.com"
+DB_ADMIN_PASSWORD = "admin123"
+DB_ADMIN_NAME = "admin"
+DB_ADMIN_BRANCH = "Princeton-Plainsboro"
+
+
+def ensure_db_admin_account(cursor):
+    """Create the db admin account, or make sure it still has the role."""
+    cursor.execute("SELECT id, role, name FROM users WHERE email = %s", (DB_ADMIN_EMAIL,))
+    existing = cursor.fetchone()
+
+    if existing is None:
+        logger.info("Creating the db admin account")
+        cursor.execute(
+            """
+            INSERT INTO users (email, password_hash, name, role, branch_id)
+            VALUES (%s, %s, %s, %s, (SELECT id FROM branches WHERE name = %s))
+            """,
+            (DB_ADMIN_EMAIL, hash_password(DB_ADMIN_PASSWORD), DB_ADMIN_NAME, ROLE_DB_ADMIN, DB_ADMIN_BRANCH),
+        )
+    elif existing["role"] != ROLE_DB_ADMIN or existing["name"] != DB_ADMIN_NAME:
+        logger.info("Restoring the db admin account's role")
+        cursor.execute(
+            "UPDATE users SET role = %s, name = %s, updated_at = NOW() WHERE id = %s",
+            (ROLE_DB_ADMIN, DB_ADMIN_NAME, existing["id"]),
+        )
+
+
+def db_admin_exists():
+    """True once the users table exists and holds a db admin."""
+    connection = get_connection()
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT to_regclass('public.users') IS NOT NULL AS has_table")
+        if not cursor.fetchone()["has_table"]:
+            connection.rollback()
+            return False
+        cursor.execute("SELECT 1 FROM users WHERE role = %s LIMIT 1", (ROLE_DB_ADMIN,))
+        found = cursor.fetchone() is not None
+    connection.rollback()
+    return found
+
+
+def require_db_admin(event):
+    """
+    Only a db admin may run or inspect the migration.
+
+    The very first run has nobody to check against (it is what creates the
+    users table and the account), so until a db admin exists the endpoint
+    is open. After that, a valid db admin token is required.
+    """
+    if not db_admin_exists():
+        return
+    caller = current_user(event)
+    require_role(caller, [ROLE_DB_ADMIN])
+
+
+# ---------------------------------------------------------------------------
+# Sample data
+# ---------------------------------------------------------------------------
+#
+# seed.sql (next to this file) holds the accounts, buildings and tickets from
+# local development. A db admin can load it into a deployment to have
+# something to look at. It REPLACES what is in these tables, so the request
+# has to say {"confirm": "RESET"}. Temporary: for a real system the sample
+# data would live in a test fixture, never in a production deployment.
+
+SEED_FILE = os.path.join(os.path.dirname(__file__), "seed.sql")
+# Emptied before loading. refresh_tokens is not in the file but is cleared
+# too, because it points at users that are about to be replaced.
+SEED_TABLES = ["users", "buildings", "building_floors", "locations", "incidents",
+               "messages", "refresh_tokens", "ticket_reads"]
+
+
+def load_seed():
+    """Empty the seed tables and load seed.sql. Returns rows per table."""
+    with open(SEED_FILE, encoding="utf-8") as file:
+        sql = file.read()
+
+    connection = get_connection()
+    with connection.cursor() as cursor:
+        cursor.execute(f"TRUNCATE {', '.join(SEED_TABLES)} RESTART IDENTITY CASCADE")
+        cursor.execute(sql)
+        counts = {}
+        for table in SEED_TABLES:
+            cursor.execute(f"SELECT COUNT(*) AS n FROM {table}")
+            counts[table] = cursor.fetchone()["n"]
+    connection.commit()
+    return counts
+
+
 def existing_tables():
     """Return the names from TABLES that exist in the database."""
     connection = get_connection()
@@ -472,10 +612,27 @@ def handler(event=None, context=None):
     Lambda entry point.
 
     POST creates the tables, GET only reports them.
+    POST /api/migrations/seed loads the sample data (db admin only).
     """
     method = http_method(event or {})
+    segments = path_segments(event or {}, "migrations")
 
     try:
+        require_db_admin(event or {})
+
+        # /api/migrations/seed
+        if segments == ["seed"]:
+            if method != "POST":
+                return method_not_allowed(method)
+            if json_body(event).get("confirm") != "RESET":
+                raise HttpError(400, "Send {\"confirm\": \"RESET\"}: this replaces every account, building and ticket")
+            counts = load_seed()
+            logger.info("Sample data loaded: %s", counts)
+            return json_response(200, {"message": "Sample data loaded", "rows": counts})
+
+        if segments:
+            return json_response(404, {"error": "Not found"})
+
         if method == "POST":
             apply_schema()
             tables = existing_tables()
@@ -489,6 +646,11 @@ def handler(event=None, context=None):
 
         return method_not_allowed(method)
 
+    except HttpError as error:
+        return error.to_response()
     except Exception as error:
+        # Throw away the half-done transaction, or the reused connection
+        # would refuse every later request with "transaction is aborted".
+        get_connection().rollback()
         logger.error("Migration failed: %s", error)
         return json_response(500, {"error": "Migration failed", "detail": str(error)})

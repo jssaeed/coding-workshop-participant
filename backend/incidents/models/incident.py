@@ -15,6 +15,9 @@ STATUSES = ["open", "assigned", "in_progress", "blocked", "resolved", "closed"]
 # enters one of these and cleared when it leaves.
 FINISHED_STATUSES = ["resolved", "closed"]
 
+# Statuses an engineer may only ask for; a facility admin has to approve.
+APPROVAL_STATUSES = ["blocked", "resolved"]
+
 MIN_PRIORITY = 1
 MAX_PRIORITY = 5
 
@@ -27,8 +30,11 @@ SELECT_INCIDENT = """
            b.room_numbers_include_floor,
            (SELECT MAX(rooms) FROM building_floors f WHERE f.building_id = b.id) AS max_rooms,
            i.reported_by, reporter.name AS reporter_name, reporter.email AS reporter_email,
-           i.assigned_to, assignee.name AS assignee_name, assignee.email AS assignee_email
+           i.assigned_to, assignee.name AS assignee_name, assignee.email AS assignee_email,
+           i.pending_status, i.pending_requested_by, i.pending_requested_at, i.pending_note,
+           requester.name AS pending_requester_name
     FROM incidents i
+    LEFT JOIN users requester ON requester.id = i.pending_requested_by
     LEFT JOIN locations l ON l.id = i.location_id
     LEFT JOIN buildings b ON b.id = l.building_id
     LEFT JOIN users reporter ON reporter.id = i.reported_by
@@ -66,7 +72,8 @@ def find_basic(incident_id, lock=False):
     handled one after the other, and the second sees the first's change.
     """
     sql = """
-        SELECT id, status, priority, location_id, reported_by, assigned_to
+        SELECT id, status, priority, location_id, reported_by, assigned_to,
+               pending_status, pending_requested_by
         FROM incidents
         WHERE id = %s
     """
@@ -75,7 +82,7 @@ def find_basic(incident_id, lock=False):
     return fetch_one(sql, (incident_id,))
 
 
-def search(reported_by=None, assigned_to=None, status=None, priority=None):
+def search(reported_by=None, assigned_to=None, status=None, priority=None, pending=False):
     """
     Return tickets matching every filter that is given.
 
@@ -97,6 +104,8 @@ def search(reported_by=None, assigned_to=None, status=None, priority=None):
     if priority is not None:
         conditions.append("i.priority = %s")
         params.append(priority)
+    if pending:
+        conditions.append("i.pending_status IS NOT NULL")
 
     sql = SELECT_INCIDENT
     if conditions:
@@ -140,16 +149,22 @@ def update_status(incident_id, status, author_id, note):
     Change the status, keep resolved_at in step with it, and add a message
     saying so. Both are saved together or not at all.
     """
+    # Any real status change also drops a pending approval request: the
+    # ticket has moved on, so the request no longer applies.
     if status in FINISHED_STATUSES:
         update_sql = """
             UPDATE incidents
-            SET status = %s, resolved_at = NOW(), updated_at = NOW()
+            SET status = %s, resolved_at = NOW(), updated_at = NOW(),
+                pending_status = NULL, pending_requested_by = NULL,
+                pending_requested_at = NULL, pending_note = NULL
             WHERE id = %s
         """
     else:
         update_sql = """
             UPDATE incidents
-            SET status = %s, resolved_at = NULL, updated_at = NOW()
+            SET status = %s, resolved_at = NULL, updated_at = NOW(),
+                pending_status = NULL, pending_requested_by = NULL,
+                pending_requested_at = NULL, pending_note = NULL
             WHERE id = %s
         """
 
@@ -191,6 +206,49 @@ def update_location(incident_id, location_id, author_id, note):
         (
             "INSERT INTO messages (incident_id, user_id, message) VALUES (%s, %s, %s)",
             (incident_id, author_id, note),
+        ),
+    ])
+    return find_by_id(incident_id)
+
+
+def request_status(incident_id, status, requested_by, note, author_id, message):
+    """
+    Record that an engineer wants the ticket blocked or resolved, without
+    changing the status, and add a message saying so. One transaction.
+    """
+    execute_many([
+        (
+            """
+            UPDATE incidents
+            SET pending_status = %s, pending_requested_by = %s, pending_requested_at = NOW(),
+                pending_note = %s, updated_at = NOW()
+            WHERE id = %s
+            """,
+            (status, requested_by, note, incident_id),
+        ),
+        (
+            "INSERT INTO messages (incident_id, user_id, message) VALUES (%s, %s, %s)",
+            (incident_id, author_id, message),
+        ),
+    ])
+    return find_by_id(incident_id)
+
+
+def clear_request(incident_id, author_id, message):
+    """Drop the pending request (a rejection or withdrawal) and add a message. One transaction."""
+    execute_many([
+        (
+            """
+            UPDATE incidents
+            SET pending_status = NULL, pending_requested_by = NULL,
+                pending_requested_at = NULL, pending_note = NULL, updated_at = NOW()
+            WHERE id = %s
+            """,
+            (incident_id,),
+        ),
+        (
+            "INSERT INTO messages (incident_id, user_id, message) VALUES (%s, %s, %s)",
+            (incident_id, author_id, message),
         ),
     ])
     return find_by_id(incident_id)

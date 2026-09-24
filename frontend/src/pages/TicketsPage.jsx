@@ -81,7 +81,7 @@ export default function TicketsPage({ user, onOpen }) {
   const scopeOptions = [{ value: 'mine', label: 'My tickets' }]
   if (isStaff(user)) scopeOptions.push({ value: 'assigned', label: 'Assigned to me' })
   if (isAdmin(user)) {
-    scopeOptions.push({ value: 'unassigned', label: 'Unassigned' }, { value: 'all', label: 'All tickets' })
+    scopeOptions.push({ value: 'unassigned', label: 'Unassigned' }, { value: 'pending', label: 'Awaiting approval' }, { value: 'all', label: 'All tickets' })
   }
 
   const columns = [
@@ -90,7 +90,12 @@ export default function TicketsPage({ user, onOpen }) {
     {
       title: 'Status',
       dataIndex: 'status',
-      render: (value) => <Tag color={STATUS_COLORS[value]}>{label(value)}</Tag>,
+      render: (value, ticket) => (
+        <>
+          <Tag color={STATUS_COLORS[value]}>{label(value)}</Tag>
+          {ticket.pendingApproval && <Tag>→ {label(ticket.pendingApproval.status)}?</Tag>}
+        </>
+      ),
     },
     {
       title: 'Priority',

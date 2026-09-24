@@ -38,16 +38,22 @@ logger = logging.getLogger()
 
 IS_LOCAL = os.getenv("IS_LOCAL", "false") == "true"
 
+ROLE_DB_ADMIN = "db_admin"
 ROLE_ADMIN = "facility_admin"
 ROLE_ENGINEER = "engineer"
 ROLE_EMPLOYEE = "employee"
-ALL_ROLES = [ROLE_ADMIN, ROLE_ENGINEER, ROLE_EMPLOYEE]
+ALL_ROLES = [ROLE_DB_ADMIN, ROLE_ADMIN, ROLE_ENGINEER, ROLE_EMPLOYEE]
 
-# Roles that work on tickets (can be assigned, can change status).
+# The roles a facility admin may hand out: everything at their branch except
+# db admin. Only a db admin can make (or unmake) another db admin.
+BRANCH_ROLES = [ROLE_ADMIN, ROLE_ENGINEER, ROLE_EMPLOYEE]
+
+# Roles that work on tickets (can be assigned, can change status). The db
+# admin is not facilities staff: they look after accounts and the schema.
 STAFF_ROLES = [ROLE_ADMIN, ROLE_ENGINEER]
 
 # Higher number = more power. Used to tell a promotion from a demotion.
-ROLE_RANK = {ROLE_EMPLOYEE: 0, ROLE_ENGINEER: 1, ROLE_ADMIN: 2}
+ROLE_RANK = {ROLE_EMPLOYEE: 0, ROLE_ENGINEER: 1, ROLE_ADMIN: 2, ROLE_DB_ADMIN: 3}
 
 ACCESS_TOKEN_LIFETIME = timedelta(minutes=15)
 REFRESH_TOKEN_LIFETIME = timedelta(days=14)
@@ -168,6 +174,10 @@ def require_role(user, allowed_roles):
 
 def is_admin(user):
     return user["role"] == ROLE_ADMIN
+
+
+def is_db_admin(user):
+    return user["role"] == ROLE_DB_ADMIN
 
 
 def is_staff(user):

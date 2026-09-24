@@ -10,12 +10,8 @@ Six Lambda services behind `/api/`: `users`, `buildings`, `incidents`, `messages
 ## Setup
 
 1. Start the environment: `./bin/start-dev.sh`
-2. Create the tables: `curl -X POST http://localhost:3001/api/migrations`
-3. Sign up your first user (see `POST /api/users`), then make them an admin directly in the database — signup only ever creates employees, and only an admin can promote. The change takes effect on their next request; no need to sign out:
-   ```sh
-   psql -h localhost -U postgres -c "UPDATE users SET role = 'facility_admin' WHERE email = 'you@acme.inc'"
-   ```
-   Every later admin is promoted through the API.
+2. Create the tables: `curl -X POST http://localhost:3001/api/migrations` (open on a fresh database; afterwards it needs the db admin's token, see Migrations)
+3. Sign in as the db admin the migration created (`admin@admin.com` / `admin123`), open the Employee directory, and promote your facility admins. Everyone else signs up through the site and is promoted by their branch's facility admin.
 
 Shared code lives in `backend/_shared/` and is copied into each service's `lib/` by `./bin/sync-shared.sh`. Run that script after editing anything in `_shared/` and commit the resulting `lib/` files — they are what deploys.
 
@@ -35,12 +31,13 @@ A missing, malformed, or expired access token returns `401` (with `"Token has ex
 ### Roles
 
 | Role | Can |
-| --- | --- |
-| `employee` | File tickets, see their own tickets, message on them |
-| `engineer` | Everything above, plus see and work tickets assigned to them |
-| `facility_admin` | Everything, plus manage users, assign tickets, see all tickets |
+|---|---|
+| `employee` | File tickets, see and message on their own tickets |
+| `engineer` | Everything above, plus work tickets assigned to them |
+| `facility_admin` | Everything: all tickets, assignment, buildings, and the accounts **at their branch** (any role except `db_admin`) |
+| `db_admin` | Manage accounts and roles across **every branch**, including `facility_admin` and `db_admin`, and run the migration. Not facilities staff: no ticket or building powers beyond an employee's |
 
-New accounts are always `employee`. Roles are changed only by an admin via `PUT /api/users/{id}/role`.
+Signup always creates an `employee`. One `db_admin` account is created by the migration on every deployment: `admin@admin.com` / `admin123`, name `admin`, at Princeton-Plainsboro. (Fixed on purpose for this workshop project; in a real system the first admin is created by someone with direct database access and the password comes from a secret.)
 
 ### Who can see a ticket
 
@@ -142,7 +139,7 @@ Public. Revokes the given refresh token so it cannot be used again. The client s
 
 ### `GET /api/users` — list accounts
 
-Admin only. Returns the accounts at the **caller's own branch**; a facility admin never sees or manages another branch's people. Optional `?role=employee|engineer|facility_admin`, useful for the assign-ticket dropdown.
+Facility admin or db admin. A facility admin gets the accounts at their **own branch**; a db admin gets **every branch**. Optional `?role=employee|engineer|facility_admin`, useful for the assign-ticket dropdown.
 
 `200` → array of user objects, newest first.
 
@@ -156,7 +153,9 @@ Admin only.
 
 `role` is one of `employee`, `engineer`, `facility_admin`. `200` → the updated user. The change applies to the user's next request immediately. If the change is a demotion, the user's refresh tokens are revoked as well.
 
-Errors: `400` unknown role · `403` an admin changing their own role, or a user at another branch · `404` no such user.
+A facility admin may set `employee`, `engineer` or `facility_admin` for people at their branch, never touching a `db_admin` account. A db admin may set any role for anyone.
+
+Errors: `400` unknown role, or a facility admin sending `db_admin` · `403` changing your own role, a user at another branch, or a facility admin changing a db admin · `404` no such user.
 
 ### `DELETE /api/users/{id}` — delete an account
 
@@ -164,7 +163,7 @@ Admin only. `204` on success. Their refresh tokens and inbox read-marks are dele
 
 Tickets they reported and messages they wrote are kept. On those, `reportedBy` / `author` becomes `null`, which the frontend shows as "Deleted user". A ticket assigned to them goes back to unassigned.
 
-Errors: `403` deleting your own account, or a user at another branch · `404` no such user.
+Errors: `403` deleting your own account, a user at another branch, or a facility admin deleting a db admin · `404` no such user.
 
 ---
 
@@ -271,6 +270,7 @@ Errors: `400` missing title, priority outside 1–5, unknown `buildingId` or one
 | *(none)* or `?scope=mine` | anyone | tickets you reported |
 | `?scope=assigned` | engineer, admin | tickets assigned to you |
 | `?scope=unassigned` | admin | open tickets with no engineer |
+| `?scope=pending` | admin | tickets with a blocked/resolved request awaiting approval |
 | `?scope=all` | admin | every ticket |
 
 Add `?status=` and/or `?priority=` to filter (not combined with `unassigned`). Sorted most urgent first, then newest.
@@ -304,8 +304,10 @@ Errors: `400` missing `assigneeId`, unknown user, the user is an employee, or th
 The assigned engineer, or any admin.
 
 ```json
-{ "status": "in_progress" }
+{ "status": "in_progress", "note": "optional, added to the thread message" }
 ```
+
+**Approval rule.** An engineer asking for `blocked` or `resolved` does not change the status. The request is stored on the ticket as `pendingApproval` (`{ status, note, requestedAt, requestedBy }`), a message "Ticket #12: requested resolved, awaiting facility admin approval" is posted, and a facility admin decides with the approval endpoint below. Admins setting those statuses apply them immediately. Any real status change clears a pending request.
 
 Also posts a message on the ticket, from the caller, in the same transaction:
 
@@ -315,7 +317,19 @@ Also posts a message on the ticket, from the caller, in the same transaction:
 
 `open` and `assigned` follow the assignment: a ticket with an engineer cannot be set to `open`, and a ticket without one cannot be set to `assigned`.
 
-Errors: `400` unknown status, the ticket is already in that status, `open` requested while an engineer is assigned, or `assigned` requested with no engineer · `403` an engineer who is not assigned to this ticket · `404` no such ticket.
+Errors: `400` unknown status, the ticket is already in that status, the same request is already pending, `open` requested while an engineer is assigned, or `assigned` requested with no engineer · `403` an engineer who is not assigned to this ticket · `404` no such ticket.
+
+### `PUT /api/incidents/{id}/approval` — approve or reject a request
+
+Admin only.
+
+```json
+{ "decision": "approve", "note": "optional" }
+```
+
+`approve` applies the requested status (stamping `resolvedAt` for resolved) and posts "Ticket #12: status changed to resolved (approved)". `reject` clears the request and posts "Ticket #12: request to mark resolved rejected". Either message carries the note.
+
+`200` → the ticket. Errors: `400` unknown decision, or nothing pending · `403` not an admin · `404` no such ticket.
 
 ### `PUT /api/incidents/{id}/priority` — change priority
 
@@ -470,6 +484,29 @@ Call it when the user opens a ticket. Allowed for the reporter, the assignee, or
 ## Migrations — `/api/migrations`
 
 Creates any missing database tables. The schema is the `SCHEMA` list at the top of `backend/migrations/function.py`. Every statement uses `IF NOT EXISTS`, so calling this repeatedly is safe.
+
+It also creates the `db_admin` account (see Roles) and seeds the two branches.
+
+**Who may call it.** The first run on a fresh database is open, because it is what creates the users table and the db admin. From then on both `GET` and `POST` require a db admin's access token (`401` without one, `403` for any other role):
+
+```sh
+TOKEN=$(curl -s -X POST $API/api/users/login -H "Content-Type: application/json" \
+  -d '{"email":"admin@admin.com","password":"admin123"}' | python3 -c 'import sys,json; print(json.load(sys.stdin)["token"])')
+curl -s -X POST $API/api/migrations -H "Authorization: Bearer $TOKEN"
+```
+
+### `POST /api/migrations/seed` — load the sample data (temporary)
+
+Db admin only. **Replaces** every account, building, ticket and message with the sample set in `backend/migrations/seed.sql` (the local development data: the House cast accounts, buildings A/B/C and about 80 tickets). Sessions are cleared too, so log in again afterwards. Branches are untouched.
+
+```sh
+curl -s -X POST $API/api/migrations/seed -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" -d '{"confirm":"RESET"}'
+```
+
+`200` → `{ "message": "Sample data loaded", "rows": { "users": 13, "incidents": 81, ... } }`. Errors: `400` without `"confirm": "RESET"` · `401`/`403` not a db admin.
+
+This exists for the workshop deployment only; real sample data belongs in test fixtures.
 
 | Method | Does |
 | --- | --- |

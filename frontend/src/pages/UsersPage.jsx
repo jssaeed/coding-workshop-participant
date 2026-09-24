@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Button, Popconfirm, Select, Space, Table, Tag, Typography } from 'antd'
 import { DeleteOutlined } from '@ant-design/icons'
 import { users } from '../services/api'
-import { ROLES, ROLE_ORDER, formatDate, label } from '../services/format'
+import { BRANCH_ROLES, ROLES, ROLE_ORDER, formatDate, isDbAdmin, label } from '../services/format'
 import Alert from '../components/Alert'
 
 // The ways the directory can be ordered. Each one is a compare function
@@ -24,6 +24,7 @@ export default function UsersPage({ user }) {
   const [list, setList] = useState([])
   const [sortBy, setSortBy] = useState('name')
   const [roleFilter, setRoleFilter] = useState('') // '' means every role
+  const [branchFilter, setBranchFilter] = useState('') // '' means every branch (db admin only)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
@@ -71,7 +72,13 @@ export default function UsersPage({ user }) {
   const sortOption = SORT_OPTIONS.find((option) => option.value === sortBy)
   const shownList = list
     .filter((account) => roleFilter === '' || account.role === roleFilter)
+    .filter((account) => branchFilter === '' || account.branch.id === branchFilter)
     .sort(sortOption.compare)
+
+  // The branches present in the list, for the db admin's branch filter
+  const branchOptions = [...new Map(list.map((a) => [a.branch.id, a.branch.name])).entries()]
+    .sort((a, b) => a[1].localeCompare(b[1]))
+    .map(([id, name]) => ({ value: id, label: name }))
 
   const columns = [
     {
@@ -82,17 +89,20 @@ export default function UsersPage({ user }) {
       ),
     },
     { title: 'Email', dataIndex: 'email', responsive: ['md'] },
+    // The db admin sees every branch, so show which one each person is at
+    ...(isDbAdmin(user) ? [{ title: 'Branch', dataIndex: ['branch', 'name'], responsive: ['md'] }] : []),
     {
       title: 'Role',
       dataIndex: 'role',
       render: (role, account) => (
-        // You cannot change your own role
+        // You cannot change your own role. A facility admin cannot touch a db
+        // admin's account or hand out the db admin role.
         <Select
           value={role}
           onChange={(value) => changeRole(account, value)}
-          disabled={account.id === user.id}
+          disabled={account.id === user.id || (!isDbAdmin(user) && account.role === 'db_admin')}
           style={{ width: 160 }}
-          options={ROLES.map((r) => ({ value: r, label: label(r) }))}
+          options={(isDbAdmin(user) ? ROLES : BRANCH_ROLES).map((r) => ({ value: r, label: label(r) }))}
         />
       ),
     },
@@ -111,7 +121,7 @@ export default function UsersPage({ user }) {
           onConfirm={() => deleteUser(account)}
           disabled={account.id === user.id}
         >
-          <Button danger type="text" icon={<DeleteOutlined />} disabled={account.id === user.id} />
+          <Button danger type="text" icon={<DeleteOutlined />} disabled={account.id === user.id || (!isDbAdmin(user) && account.role === 'db_admin')} />
         </Popconfirm>
       ),
     },
@@ -122,9 +132,17 @@ export default function UsersPage({ user }) {
       <div className="page-title">
         <Typography.Title level={2} style={{ margin: 0 }}>
           Employee directory
-          {user.branch && <span className="muted" style={{ fontSize: 16, fontWeight: 400 }}> · {user.branch.name}</span>}
+          <span className="muted" style={{ fontSize: 16, fontWeight: 400 }}> · {isDbAdmin(user) ? 'All branches' : user.branch?.name}</span>
         </Typography.Title>
         <Space wrap>
+          {isDbAdmin(user) && (
+            <Select
+              value={branchFilter}
+              onChange={setBranchFilter}
+              style={{ width: 200 }}
+              options={[{ value: '', label: 'All branches' }, ...branchOptions]}
+            />
+          )}
           <Select
             value={roleFilter}
             onChange={setRoleFilter}
@@ -147,7 +165,7 @@ export default function UsersPage({ user }) {
         dataSource={shownList}
         loading={loading}
         pagination={false}
-        locale={{ emptyText: roleFilter ? `${label(roleFilter)}: no accounts.` : 'No accounts.' }}
+        locale={{ emptyText: roleFilter || branchFilter ? 'No accounts match these filters.' : 'No accounts.' }}
       />
     </div>
   )
