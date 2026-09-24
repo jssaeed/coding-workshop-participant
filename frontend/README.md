@@ -52,6 +52,17 @@ To deploy your frontend to AWS:
 
 To view your application, open the browser and navigate to CloudFront URL.
 
+## Testing
+
+Unit and component tests run with Vitest and React Testing Library, no server needed:
+
+```sh
+npm test                 # once
+npm run test:coverage    # with a coverage report
+```
+
+The tests live in [tests/](./tests/), mirroring `src/`; see [tests/README.md](./tests/README.md) for the layout and how to add one.
+
 ## Clean Up
 
 To remove all deployed resources (including frontend):

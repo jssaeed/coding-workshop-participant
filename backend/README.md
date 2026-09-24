@@ -142,6 +142,23 @@ aws logs tail /aws/lambda/{{function-name}} \
 Replace `{{function-name}}` with corresponding service name
 (e.g. `coding-workshop-python-service-abcd1234`).
 
+## Testing
+
+Every service has a `tests/` folder with unit tests (handler in isolation, no database), integration tests (real handler against a separate PostgreSQL test database) and error-handling tests for every documented status code. Run them all with:
+
+```sh
+./bin/test-backend.sh          # add --cov for coverage, --unit to skip the database
+```
+
+To test a running server instead, local or cloud:
+
+```sh
+./bin/smoke-test.sh [base_url]                       # HTTP smoke tests of the main journeys
+./bin/load-test.sh <base_url> --profile smoke|full   # Artillery load test (cloud only)
+```
+
+See [TESTING.md](./TESTING.md) for the layout, the latest results, the findings and the known gaps.
+
 ## Clean Up
 
 To remove all deployed resources (including backend):

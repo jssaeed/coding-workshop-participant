@@ -1,0 +1,168 @@
+# Load test for the incident tracker API, run with Artillery (https://artillery.io).
+#
+#   ./bin/load-test.sh https://xxxx.cloudfront.net              # full profile
+#   ./bin/load-test.sh https://xxxx.cloudfront.net --profile smoke
+#
+# The script passes --target, and the account to run as through --variables
+# (email, password). The account is logged in once in the "before" hook; every
+# virtual user then reuses that access token. Login is kept out of the
+# scenarios on purpose: bcrypt costs a quarter second of CPU per call by
+# design, so a login-heavy test measures bcrypt, not the API.
+#
+# Reports: bin/load-test.sh writes the JSON report to test-results/load/.
+#
+# Scenario weights follow what the frontend does: the inbox badge is polled
+# constantly, ticket lists are browsed often, tickets are filed rarely.
+
+config:
+  target: "http://localhost:3001"   # overridden by --target
+  http:
+    timeout: 20
+  plugins:
+    expect:
+      outputFormat: prettyError     # only print expectations that fail
+    metrics-by-endpoint:
+      useOnlyRequestNames: true
+  ensure:
+    thresholds:
+      - http.response_time.p95: 1500   # ms
+      - http.response_time.p99: 3000
+    maxErrorRate: 1                    # % of requests that failed to complete
+  # Profiles. Artillery merges an environment's phases INTO the base phases
+  # by position, so there are no base phases: each profile lists all of its
+  # own, and the script always passes --environment <profile>.
+  environments:
+    smoke:
+      phases:
+        - name: smoke
+          duration: 20
+          arrivalRate: 2
+    full:
+      phases:
+        - name: warm-up
+          duration: 15
+          arrivalRate: 2
+        - name: ramp
+          duration: 60
+          arrivalRate: 2
+          rampTo: 15
+        - name: sustain
+          duration: 90
+          arrivalRate: 15
+    heavy:
+      phases:
+        - name: warm-up
+          duration: 15
+          arrivalRate: 5
+        - name: ramp
+          duration: 90
+          arrivalRate: 5
+          rampTo: 40
+        - name: sustain
+          duration: 120
+          arrivalRate: 40
+
+before:
+  flow:
+    - post:
+        name: login (once)
+        url: /api/users/login
+        json:
+          email: "{{ email }}"
+          password: "{{ password }}"
+        capture:
+          - json: $.token
+            as: token
+        expect:
+          - statusCode: 200
+
+scenarios:
+  - name: poll the inbox badge
+    weight: 5
+    flow:
+      - get:
+          name: GET /api/inbox/count
+          url: /api/inbox/count
+          headers:
+            Authorization: "Bearer {{ token }}"
+          expect:
+            - statusCode: 200
+            - hasProperty: unread
+
+  - name: browse tickets
+    weight: 3
+    flow:
+      - get:
+          name: GET /api/incidents
+          url: /api/incidents
+          headers:
+            Authorization: "Bearer {{ token }}"
+          expect:
+            - statusCode: 200
+      - get:
+          name: GET /api/incidents?status=open
+          url: /api/incidents?status=open
+          headers:
+            Authorization: "Bearer {{ token }}"
+          expect:
+            - statusCode: 200
+      - get:
+          name: GET /api/buildings
+          url: /api/buildings
+          headers:
+            Authorization: "Bearer {{ token }}"
+          expect:
+            - statusCode: 200
+
+  - name: file a ticket and comment on it
+    weight: 1
+    flow:
+      - post:
+          name: POST /api/incidents
+          url: /api/incidents
+          headers:
+            Authorization: "Bearer {{ token }}"
+          json:
+            title: "Load test {{ $randomString() }}"
+            description: "Filed by the Artillery load test; safe to delete."
+            priority: 4
+          capture:
+            - json: $.id
+              as: ticketId
+          expect:
+            - statusCode: 201
+      - get:
+          name: GET /api/incidents/{id}
+          url: "/api/incidents/{{ ticketId }}"
+          headers:
+            Authorization: "Bearer {{ token }}"
+          expect:
+            - statusCode: 200
+      - post:
+          name: POST /api/messages
+          url: /api/messages
+          headers:
+            Authorization: "Bearer {{ token }}"
+          json:
+            incidentId: "{{ ticketId }}"
+            message: "Load test comment"
+          expect:
+            - statusCode: 201
+      - get:
+          name: GET /api/messages?incidentId
+          url: "/api/messages?incidentId={{ ticketId }}"
+          headers:
+            Authorization: "Bearer {{ token }}"
+          expect:
+            - statusCode: 200
+
+  - name: my statistics
+    weight: 1
+    flow:
+      - get:
+          name: GET /api/incidents/stats/mine
+          url: /api/incidents/stats/mine?days=30
+          headers:
+            Authorization: "Bearer {{ token }}"
+          expect:
+            - statusCode: 200

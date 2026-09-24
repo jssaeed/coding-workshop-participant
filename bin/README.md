@@ -28,6 +28,16 @@ To deploy your frontend to AWS:
 ./bin/deploy-frontend.sh
 ```
 
+### Testing
+
+To run the backend test suites, smoke-test a running server, or load-test the cloud deployment:
+
+```sh
+./bin/test-backend.sh
+./bin/smoke-test.sh "$(cd infra && terraform output -raw api_base_url)"
+./bin/load-test.sh "$(cd infra && terraform output -raw api_base_url)" --profile smoke
+```
+
 ## Available Scripts
 
 ### `deploy-backend.sh`
@@ -239,6 +249,75 @@ Sets up the complete local development environment on Ubuntu 22.04.
 * Continues on non-critical errors and reports all issues at the end
 * Dry run mode (`-n`) shows planned actions without making changes
 * dnsmasq (`-d`) is optional - enables DNS resolution for `.local` domains
+
+### `test-backend.sh`
+
+Runs every backend service's pytest suite (unit, integration and error-handling tests), one service at a time.
+
+**What it does**:
+
+* Runs `backend/_shared/tests` and each `backend/<service>/tests` with the backend virtualenv
+* Integration tests use a separate PostgreSQL database, `incident_tracker_test`, created on first run
+* Skips the integration tests (with a reason) when PostgreSQL is not running
+* Writes JUnit XML, coverage XML and a summary to `test-results/backend/`
+
+**When to use**:
+
+* Before committing backend changes; no server or deploy needed
+
+**Usage**:
+
+```sh
+./bin/test-backend.sh [--cov] [--unit] [service ...] [-- pytest args]
+```
+
+See [backend/TESTING.md](../backend/TESTING.md).
+
+### `smoke-test.sh`
+
+Runs the HTTP smoke tests in `backend/_e2e` against a running server, local or cloud.
+
+**What it does**:
+
+* Walks the main user journeys over plain HTTP: sign up, log in, file a ticket, comment, inbox, refresh, log out
+* Creates throw-away `smoke-*@acme.inc` accounts and deletes them again with the db admin account
+* Reports API responses that are not JSON, which is how a CloudFront error-page fallback shows up
+* Writes JUnit XML to `test-results/smoke/<date>.xml`
+
+**When to use**:
+
+* After `./bin/start-dev.sh`, to check the local stack end to end
+* After `./bin/deploy-backend.sh`, to check the deploy actually serves the API
+
+**Usage**:
+
+```sh
+./bin/smoke-test.sh [base_url]     # default http://localhost:3001
+./bin/smoke-test.sh "$(cd infra && terraform output -raw api_base_url)"
+```
+
+### `load-test.sh`
+
+Runs the Artillery load test in `backend/_load/artillery.yml` against a server.
+
+**What it does**:
+
+* Fetches Artillery with `npx` (needs Node.js and network access on first use)
+* Signs up a throw-away `loadtest-*@acme.inc` account and logs in once; every virtual user reuses that token
+* Sends a mix that follows the frontend: inbox badge polling, ticket browsing, occasional ticket filing
+* Fails when p95 latency exceeds 1.5 s, p99 exceeds 3 s, or more than 1% of requests error
+* Writes a JSON report to `test-results/load/`
+
+**When to use**:
+
+* AWS only. Local Lambdas run as single Docker containers with no scaling, so local numbers mean nothing
+* Start with `--profile smoke`; the account is shared, so ramp up only when that is clean
+
+**Usage**:
+
+```sh
+./bin/load-test.sh <base_url> [--profile smoke|full|heavy] [--email x --password y]
+```
 
 ### `cleanup-environment.sh`
 

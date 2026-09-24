@@ -1,0 +1,9 @@
+# Tools for running the backend test suites (see backend/TESTING.md).
+# The services' own runtime dependencies are vendored into each service
+# folder by bin/start-dev.sh; the venv also carries them for backend/_shared.
+pytest>=8
+pytest-cov>=5
+psycopg[binary]>=3.2
+PyJWT>=2.9
+bcrypt>=4.2
+requests>=2.31

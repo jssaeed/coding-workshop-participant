@@ -221,6 +221,9 @@ logs
 # Coverage data
 coverage
 
+# Test results (JUnit XML, coverage, load reports) written by the test runners
+test-results/
+
 # Build output
 dist
 build
