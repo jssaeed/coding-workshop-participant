@@ -13,6 +13,7 @@ from function import handler
 from models import building as building_model
 from models import incident as incident_model
 from models import location as location_model
+from models import stats as stats_model
 from models import user as user_model
 from views import incident_view, stats_view
 
@@ -23,9 +24,9 @@ BUILDING = {"id": 2, "branch_id": 1, "name": "HQ", "floors": 3, "basement_floors
 
 def ticket_row(**overrides):
     row = {
-        "id": 12, "title": "Leaking pipe", "description": "", "status": "open", "priority": 3,
+        "id": 12, "title": "Leaking pipe", "description": "", "status": "open", "priority": 3, "category": "other",
         "created_at": NOW, "updated_at": NOW, "resolved_at": None,
-        "location_id": None, "floor": None, "room": None, "building_id": None, "building_name": None,
+        "location_id": None, "branch_id": 1, "floor": None, "room": None, "building_id": None, "building_name": None,
         "room_numbers_include_floor": None, "max_rooms": None,
         "reported_by": 4, "reporter_name": "Ana", "reporter_email": "ana@acme.inc",
         "assigned_to": None, "assignee_name": None, "assignee_email": None,
@@ -37,7 +38,7 @@ def ticket_row(**overrides):
 
 
 def basic(**overrides):
-    row = {"id": 12, "status": "open", "priority": 3, "location_id": None, "reported_by": 4,
+    row = {"id": 12, "status": "open", "priority": 3, "category": "other", "location_id": None, "branch_id": 1, "reported_by": 4,
            "assigned_to": None, "pending_status": None, "pending_requested_by": None}
     row.update(overrides)
     return row
@@ -59,8 +60,9 @@ def models(monkeypatch, no_database):
         "request_status": stub(monkeypatch, incident_model, "request_status", ticket_row()),
         "clear_request": stub(monkeypatch, incident_model, "clear_request", ticket_row()),
         "update_priority": stub(monkeypatch, incident_model, "update_priority", ticket_row()),
+        "update_category": stub(monkeypatch, incident_model, "update_category", ticket_row()),
         "update_location": stub(monkeypatch, incident_model, "update_location", ticket_row()),
-        "user": stub(monkeypatch, user_model, "find_by_id", {"id": 7, "name": "Bob", "email": "bob@acme.inc", "role": "engineer"}),
+        "user": stub(monkeypatch, user_model, "find_by_id", {"id": 7, "name": "Bob", "email": "bob@acme.inc", "role": "engineer", "branch_id": 1}),
     }
 
 
@@ -73,6 +75,7 @@ class TestCreateValidation:
         ({"title": "Leak", "priority": 0}, "'priority' must be between 1 and 5"),
         ({"title": "Leak", "priority": 6}, "'priority' must be between 1 and 5"),
         ({"title": "Leak", "priority": "2"}, "'priority' must be a whole number"),
+        ({"title": "Leak", "category": "magic"}, "'category' must be one of: plumbing, electrical, hvac, structural, doors_and_locks, elevators, furniture, appliances, safety, cleaning, other"),
         ({"title": "Leak", "location": "HQ"}, "'location' must be an object"),
         ({"title": "Leak", "location": {}}, "'buildingId' is required"),
         ({"title": "Leak", "location": {"buildingId": 2}}, "'floor' must be between B1 and 3 (there is no floor 0)"),
@@ -111,7 +114,7 @@ class TestCreateValidation:
         sign_in_as(monkeypatch, "employee", user_id=4)
         status, data = call(handler, "POST", "/api/incidents", body={"title": " Leak "})
         assert status == 201
-        assert models["create"].calls[0][0] == ("Leak", "", 3, None, 4)
+        assert models["create"].calls[0][0] == ("Leak", "", 3, "other", None, 4, 1)  # ... reporter 4, at branch 1
         assert data["status"] == "open"
 
     def test_room_on_a_floor_without_a_count_is_accepted(self, models, monkeypatch):
@@ -120,7 +123,7 @@ class TestCreateValidation:
         status, _ = call(handler, "POST", "/api/incidents", body={"title": "Leak", "location": {"buildingId": 2, "floor": -1, "room": 900}})
         assert status == 201
         assert models["location"].calls[0][0] == (2, -1, 900)
-        assert models["create"].calls[0][0][3] == 77
+        assert models["create"].calls[0][0][4] == 77  # the location id, after title, description, priority, category
 
     def test_create_is_one_transaction(self, models, monkeypatch, no_database):
         sign_in_as(monkeypatch, "employee")
@@ -134,8 +137,17 @@ class TestListValidation:
     @pytest.mark.parametrize("query, message", [
         ({"scope": "everything"}, "'scope' must be one of: mine, assigned, unassigned, pending, all"),
         ({"status": "done"}, "'status' must be one of: open, assigned, in_progress, blocked, resolved, closed"),
+        ({"status": "open,done"}, "'status' must be one of: open, assigned, in_progress, blocked, resolved, closed"),
         ({"priority": "0"}, "'priority' must be between 1 and 5"),
         ({"priority": "high"}, "'priority' must be between 1 and 5"),
+        ({"category": "magic"}, "'category' must be one of: plumbing, electrical, hvac, structural, doors_and_locks, elevators, furniture, appliances, safety, cleaning, other"),
+        ({"buildingId": "0"}, "'buildingId' must be a positive whole number"),
+        ({"buildingId": "hq"}, "'buildingId' must be a positive whole number"),
+        ({"floor": "3"}, "'floor' needs a 'buildingId'"),
+        ({"buildingId": "2", "floor": "0"}, "'floor' must be between B1 and 3 (there is no floor 0)"),
+        ({"buildingId": "2", "floor": "4"}, "'floor' must be between B1 and 3 (there is no floor 0)"),
+        ({"buildingId": "2", "floor": "-2"}, "'floor' must be between B1 and 3 (there is no floor 0)"),
+        ({"buildingId": "2", "floor": "three"}, "'floor' must be between B1 and 3 (there is no floor 0)"),
     ])
     def test_bad_query(self, models, monkeypatch, query, message):
         sign_in_as(monkeypatch, "facility_admin")
@@ -159,7 +171,7 @@ class TestListValidation:
         ({"limit": "101"}, "'limit' must be between 1 and 100"),
         ({"days": "0"}, "'days' must be between 1 and 365"),
         ({"days": "366"}, "'days' must be between 1 and 365"),
-        ({"sort": "colour"}, "'sort' must be one of: priority, created, updated, id, title"),
+        ({"sort": "colour"}, "'sort' must be one of: priority, created, updated, id, title, location"),
         ({"order": "up"}, "'order' must be one of: asc, desc"),
         ({"q": "x" * 101}, "'q' must be 100 characters or fewer"),
     ])
@@ -170,11 +182,39 @@ class TestListValidation:
 
     def test_default_scope_is_mine_with_filters(self, models, monkeypatch):
         sign_in_as(monkeypatch, "employee", user_id=4)
-        status, data = call(handler, "GET", "/api/incidents", query={"status": "open", "priority": "2"})
+        status, data = call(handler, "GET", "/api/incidents", query={"status": "open", "priority": "2", "category": "plumbing"})
         assert (status, data) == (200, {"items": [], "total": 0, "page": 1, "limit": 25, "pages": 1})
-        filters = {"reported_by": 4, "status": "open", "priority": 2, "since": None, "q": None}
+        filters = {"reported_by": 4, "status": ["open"], "priority": 2, "category": "plumbing", "since": None, "q": None,
+                   "building_id": None, "floor": None}
         assert models["count"].calls[0][1] == filters
         assert models["search"].calls[0][1] == {**filters, "sort": "priority", "descending": False, "limit": 25, "offset": 0}
+
+    def test_several_statuses_reach_the_model_as_a_list(self, models, monkeypatch):
+        sign_in_as(monkeypatch, "employee", user_id=4)
+        status, _ = call(handler, "GET", "/api/incidents", query={"status": "open, in_progress"})
+        assert status == 200
+        assert models["search"].calls[-1][1]["status"] == ["open", "in_progress"]
+        assert models["count"].calls[-1][1]["status"] == ["open", "in_progress"]
+
+    def test_building_and_floor_reach_the_model(self, models, monkeypatch):
+        sign_in_as(monkeypatch, "employee", user_id=4)
+        status, _ = call(handler, "GET", "/api/incidents", query={"buildingId": "2"})
+        assert status == 200
+        assert (models["search"].calls[-1][1]["building_id"], models["search"].calls[-1][1]["floor"]) == (2, None)
+        status, _ = call(handler, "GET", "/api/incidents", query={"buildingId": "2", "floor": "-1"})
+        assert status == 200
+        assert (models["count"].calls[-1][1]["building_id"], models["count"].calls[-1][1]["floor"]) == (2, -1)
+        assert models["search"].calls[-1][1]["sort"] == "priority"
+
+    def test_unknown_building_or_one_at_another_branch(self, models, monkeypatch):
+        sign_in_as(monkeypatch, "employee", user_id=4)
+        stub(monkeypatch, building_model, "find_by_id", None)
+        status, data = call(handler, "GET", "/api/incidents", query={"buildingId": "9"})
+        assert (status, data) == (400, {"error": "'buildingId' does not match a known building"})
+        stub(monkeypatch, building_model, "find_by_id", {**BUILDING, "branch_id": 2})
+        status, data = call(handler, "GET", "/api/incidents", query={"buildingId": "2", "floor": "1"})
+        assert (status, data) == (400, {"error": "'buildingId' is not a building at your branch"})
+        assert models["search"].calls == []
 
     def test_pending_scope(self, models, monkeypatch):
         sign_in_as(monkeypatch, "facility_admin")
@@ -212,7 +252,7 @@ class TestVisibility:
     @pytest.mark.parametrize("role, user_id, expected", [
         ("employee", 4, 200),        # the reporter
         ("engineer", 7, 200),        # the assignee
-        ("facility_admin", 1, 200),  # any admin
+        ("facility_admin", 1, 200),  # an admin at the ticket's branch (1)
         ("employee", 5, 404),        # someone else: 404, not 403
         ("engineer", 8, 404),
         ("db_admin", 9, 404),        # the db admin is not facilities staff
@@ -228,6 +268,82 @@ class TestVisibility:
         stub(monkeypatch, incident_model, "find_basic", None)
         status, data = call(handler, "GET", "/api/incidents/12")
         assert (status, data) == (404, {"error": "Incident not found"})
+
+
+class TestBranchRules:
+    """A facility admin's powers stop at their own branch. The ticket here is at branch 1."""
+
+    @pytest.mark.parametrize("method, path, body", [
+        ("GET", "/api/incidents/12", None),
+        ("PUT", "/api/incidents/12/assign", {"assigneeId": 7}),
+        ("PUT", "/api/incidents/12/status", {"status": "in_progress"}),
+        ("PUT", "/api/incidents/12/priority", {"priority": 1}),
+        ("PUT", "/api/incidents/12/category", {"category": "plumbing"}),
+        ("PUT", "/api/incidents/12/approval", {"decision": "approve"}),
+        ("PUT", "/api/incidents/12/location", {"location": None}),
+    ])
+    def test_admin_at_another_branch_gets_404_and_changes_nothing(self, models, monkeypatch, method, path, body):
+        sign_in_as(monkeypatch, "facility_admin", branch_id=2)
+        stub(monkeypatch, incident_model, "find_basic", basic(assigned_to=7, pending_status="resolved", location_id=77))
+        status, data = call(handler, method, path, body=body)
+        assert (status, data) == (404, {"error": "Incident not found"})
+        for name in ("assign", "update_status", "update_priority", "update_category", "update_location", "clear_request"):
+            assert models[name].calls == [], name
+
+    def test_admin_at_the_tickets_branch_is_allowed(self, models, monkeypatch):
+        sign_in_as(monkeypatch, "facility_admin", branch_id=2)
+        stub(monkeypatch, incident_model, "find_basic", basic(branch_id=2))
+        assert call(handler, "GET", "/api/incidents/12")[0] == 200
+        assert call(handler, "PUT", "/api/incidents/12/priority", body={"priority": 1})[0] == 200
+
+    def test_a_new_ticket_is_filed_at_the_reporters_branch(self, models, monkeypatch):
+        sign_in_as(monkeypatch, "employee", user_id=4, branch_id=2)
+        status, _ = call(handler, "POST", "/api/incidents", body={"title": "Leak"})
+        assert status == 201
+        assert models["create"].calls[0][0] == ("Leak", "", 3, "other", None, 4, 2)
+
+    @pytest.mark.parametrize("scope", ["all", "unassigned", "pending"])
+    def test_admin_lists_only_their_branch(self, models, monkeypatch, scope):
+        sign_in_as(monkeypatch, "facility_admin", branch_id=2)
+        call(handler, "GET", "/api/incidents", query={"scope": scope})
+        assert models["search"].calls[0][1]["branch_id"] == 2
+        assert models["count"].calls[0][1]["branch_id"] == 2
+
+    @pytest.mark.parametrize("scope", ["mine", "assigned"])
+    def test_personal_scopes_are_not_branch_filtered(self, models, monkeypatch, scope):
+        sign_in_as(monkeypatch, "facility_admin", branch_id=2)
+        call(handler, "GET", "/api/incidents", query={"scope": scope})
+        assert "branch_id" not in models["search"].calls[0][1]
+
+    def test_assignee_must_work_at_the_tickets_branch(self, models, monkeypatch):
+        sign_in_as(monkeypatch, "facility_admin")
+        stub(monkeypatch, user_model, "find_by_id", {"id": 7, "name": "Bob", "email": "bob@acme.inc", "role": "engineer", "branch_id": 2})
+        status, data = call(handler, "PUT", "/api/incidents/12/assign", body={"assigneeId": 7})
+        assert (status, data) == (400, {"error": "Tickets can only be assigned to staff at the ticket's branch"})
+        assert models["assign"].calls == []
+
+    def test_stats_are_for_the_admins_branch(self, models, monkeypatch):
+        sign_in_as(monkeypatch, "facility_admin", branch_id=2)
+        by_status = stub(monkeypatch, stats_model, "count_by_status", [])
+        by_priority = stub(monkeypatch, stats_model, "count_by_priority", [])
+        by_category = stub(monkeypatch, stats_model, "count_by_category", [])
+        resolution = stub(monkeypatch, stats_model, "resolution_time", {"average_seconds": None, "resolved_count": 0})
+        workload = stub(monkeypatch, stats_model, "engineer_workload", [])
+        by_building = stub(monkeypatch, stats_model, "count_by_building", [])
+        assert call(handler, "GET", "/api/incidents/stats/overview")[0] == 200
+        assert call(handler, "GET", "/api/incidents/stats/engineers")[0] == 200
+        assert call(handler, "GET", "/api/incidents/stats/locations")[0] == 200
+        assert by_status.calls[0][1]["branch_id"] == 2
+        assert by_priority.calls[0][0][1] == 2
+        assert by_category.calls[0][0][1] == 2
+        assert resolution.calls[0][0][1] == 2
+        assert workload.calls[0][0][1] == 2
+        assert by_building.calls[0][0][1] == 2
+
+    def test_stats_for_a_building_at_another_branch_is_404(self, models, monkeypatch):
+        sign_in_as(monkeypatch, "facility_admin", branch_id=2)  # BUILDING is at branch 1
+        status, data = call(handler, "GET", "/api/incidents/stats/locations", query={"buildingId": "2"})
+        assert (status, data) == (404, {"error": "Building not found"})
 
 
 class TestAssignRules:
@@ -253,7 +369,7 @@ class TestAssignRules:
         stub(monkeypatch, user_model, "find_by_id", None)
         status, data = call(handler, "PUT", "/api/incidents/12/assign", body={"assigneeId": 99})
         assert (status, data) == (400, {"error": "'assigneeId' does not match a known user"})
-        stub(monkeypatch, user_model, "find_by_id", {"id": 5, "name": "Cy", "email": "c@acme.inc", "role": "employee"})
+        stub(monkeypatch, user_model, "find_by_id", {"id": 5, "name": "Cy", "email": "c@acme.inc", "role": "employee", "branch_id": 1})
         status, data = call(handler, "PUT", "/api/incidents/12/assign", body={"assigneeId": 5})
         assert (status, data) == (400, {"error": "Tickets can only be assigned to an engineer or admin"})
 
@@ -375,6 +491,28 @@ class TestApprovalRules:
         assert models["clear_request"].calls[0][0] == (12, 1, "Ticket #12: request to mark blocked rejected")
 
 
+class TestApprovalNoteMessages:
+    """Without a database: the note is appended to the thread message, or left off when absent."""
+
+    def test_engineer_request_carries_the_note(self, models, monkeypatch):
+        sign_in_as(monkeypatch, "engineer", user_id=7)
+        stub(monkeypatch, incident_model, "find_basic", basic(status="in_progress", assigned_to=7))
+        status, _ = call(handler, "PUT", "/api/incidents/12/status", body={"status": "blocked", "note": "Parts missing"})
+        assert status == 200
+        assert models["request_status"].calls[0][0] == (
+            12, "blocked", 7, "Parts missing", 7, "Ticket #12: requested blocked, awaiting facility admin approval - Parts missing")
+        assert models["update_status"].calls == []
+
+    def test_reject_with_and_without_a_note(self, models, monkeypatch):
+        sign_in_as(monkeypatch, "facility_admin")
+        stub(monkeypatch, incident_model, "find_basic", basic(status="in_progress", assigned_to=7, pending_status="resolved", pending_requested_by=7))
+        assert call(handler, "PUT", "/api/incidents/12/approval", body={"decision": "reject", "note": "Not yet"})[0] == 200
+        assert models["clear_request"].calls[0][0] == (12, 1, "Ticket #12: request to mark resolved rejected - Not yet")
+        assert call(handler, "PUT", "/api/incidents/12/approval", body={"decision": "reject"})[0] == 200
+        assert models["clear_request"].calls[1][0] == (12, 1, "Ticket #12: request to mark resolved rejected")
+        assert models["update_status"].calls == []
+
+
 class TestPriorityRules:
     @pytest.mark.parametrize("body, message", [
         ({}, "'priority' is required"),
@@ -399,6 +537,35 @@ class TestPriorityRules:
         assert call(handler, "PUT", "/api/incidents/12/priority", body={"priority": 1})[0] == 403
         sign_in_as(monkeypatch, "employee", user_id=4)
         assert call(handler, "PUT", "/api/incidents/12/priority", body={"priority": 1})[0] == 403
+
+
+class TestCategoryRules:
+    @pytest.mark.parametrize("body, message", [
+        ({}, "'category' is required"),
+        ({"category": "magic"}, "'category' must be one of: plumbing, electrical, hvac, structural, doors_and_locks, elevators, furniture, appliances, safety, cleaning, other"),
+        ({"category": "other"}, "Incident is already in the other category"),
+    ])
+    def test_bad_input(self, models, monkeypatch, body, message):
+        sign_in_as(monkeypatch, "facility_admin")
+        status, data = call(handler, "PUT", "/api/incidents/12/category", body=body)
+        assert (status, data) == (400, {"error": message})
+        assert models["update_category"].calls == []
+
+    def test_assignee_changes_it_and_a_message_is_posted(self, models, monkeypatch):
+        sign_in_as(monkeypatch, "engineer", user_id=7)
+        stub(monkeypatch, incident_model, "find_basic", basic(status="assigned", assigned_to=7))
+        status, _ = call(handler, "PUT", "/api/incidents/12/category", body={"category": "hvac"})
+        assert status == 200
+        # the message uses the name people read, not the code
+        assert models["update_category"].calls[0][0] == (12, "hvac", 7, "Ticket #12: category changed to AC / heating")
+
+    def test_other_engineer_and_employee_may_not(self, models, monkeypatch):
+        sign_in_as(monkeypatch, "engineer", user_id=8)
+        stub(monkeypatch, incident_model, "find_basic", basic(status="assigned", assigned_to=7))
+        assert call(handler, "PUT", "/api/incidents/12/category", body={"category": "plumbing"})[0] == 403
+        sign_in_as(monkeypatch, "employee", user_id=4)
+        assert call(handler, "PUT", "/api/incidents/12/category", body={"category": "plumbing"})[0] == 403
+        assert models["update_category"].calls == []
 
 
 class TestLocationRules:
@@ -470,8 +637,9 @@ class TestIncidentView:
         assert data["assignedTo"] is None
         assert data["pendingApproval"] is None
         assert data["resolvedAt"] is None
-        assert set(data) == {"id", "title", "pendingApproval", "description", "status", "priority", "location",
-                             "reportedBy", "assignedTo", "createdAt", "updatedAt", "resolvedAt"}
+        assert set(data) == {"id", "title", "pendingApproval", "description", "status", "priority", "category", "location",
+                             "branchId", "reportedBy", "assignedTo", "createdAt", "updatedAt", "resolvedAt"}
+        assert data["category"] == "other"
 
     def test_nested_objects(self):
         row = ticket_row(
@@ -497,6 +665,16 @@ class TestStatsView:
         data = stats_view.status_counts([{"status": "open", "count": 2}, {"status": "closed", "count": 1}])
         assert data == {"total": 3, "byStatus": {"open": 2, "assigned": 0, "in_progress": 0, "blocked": 0, "resolved": 0, "closed": 1}}
         assert list(data["byStatus"]) == incident_model.STATUSES
+
+    def test_priority_counts_always_list_1_to_5_as_strings(self):
+        data = stats_view.priority_counts([{"priority": 1, "count": 4}, {"priority": 3, "count": 9}])
+        assert data == {"1": 4, "2": 0, "3": 9, "4": 0, "5": 0}
+
+    def test_category_counts_always_list_every_category(self):
+        data = stats_view.category_counts([{"category": "plumbing", "count": 6}, {"category": "other", "count": 1}])
+        assert data == {"plumbing": 6, "electrical": 0, "hvac": 0, "structural": 0, "doors_and_locks": 0, "elevators": 0,
+                        "furniture": 0, "appliances": 0, "safety": 0, "cleaning": 0, "other": 1}
+        assert list(data) == incident_model.CATEGORIES
 
     def test_building_counts_name_the_missing_location(self):
         rows = [{"building_id": 1, "building_name": "HQ", "count": 7}, {"building_id": None, "building_name": None, "count": 2}]

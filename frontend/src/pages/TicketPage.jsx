@@ -5,15 +5,17 @@ import {
 import { ArrowLeftOutlined, CheckOutlined, CloseOutlined, SendOutlined } from '@ant-design/icons'
 import { buildings, inbox, incidents, messages, users } from '../services/api'
 import {
-  APPROVAL_STATUSES, PRIORITIES, PRIORITY_COLORS, STATUSES, STATUS_COLORS,
-  floorOptions, formatDate, formatLocation, initial, isAdmin, isStaff, label, personName, range, roomLabel, roomsOnFloor,
+  APPROVAL_STATUSES, CATEGORIES, PRIORITIES, PRIORITY_COLORS, STATUSES, STATUS_COLORS,
+  categoryLabel, floorOptions, formatDate, formatLocation, initial, isAdmin, isStaff, label, personName, range, roomLabel, roomsOnFloor,
 } from '../services/format'
 import Alert from '../components/Alert'
 import TicketProgress from '../components/TicketProgress'
 
 // One ticket: its details, the actions the user is allowed to take, and the
 // message thread. Opening the page marks the ticket as read.
-export default function TicketPage({ id, user, onBack, setUnread }) {
+// onDecided is called after an admin approves or rejects a request here,
+// so the app can update the Approvals count in the header straight away.
+export default function TicketPage({ id, user, onBack, setUnread, onDecided }) {
   const [ticket, setTicket] = useState(null)
   const [thread, setThread] = useState([]) // the newest messages, oldest first
   const [threadTotal, setThreadTotal] = useState(0) // how many the ticket has in all
@@ -30,6 +32,7 @@ export default function TicketPage({ id, user, onBack, setUnread }) {
   const [statusNote, setStatusNote] = useState('') // optional reason, shown on the thread
   const [decisionNote, setDecisionNote] = useState('') // admin's reason when approving/rejecting
   const [priority, setPriority] = useState(3)
+  const [category, setCategory] = useState('other')
   // Location form (admin only): buildings for the dropdown, plus the chosen place
   const [buildingList, setBuildingList] = useState([])
   const [buildingId, setBuildingId] = useState('') // '' means no location
@@ -49,6 +52,7 @@ export default function TicketPage({ id, user, onBack, setUnread }) {
         setAssignee(loadedTicket.assignedTo ? loadedTicket.assignedTo.id : '')
         setStatus(loadedTicket.status)
         setPriority(loadedTicket.priority)
+        setCategory(loadedTicket.category)
         // Start the location form at the ticket's current place
         const place = loadedTicket.location
         setBuildingId(place ? place.building.id : '')
@@ -96,6 +100,14 @@ export default function TicketPage({ id, user, onBack, setUnread }) {
     } finally {
       setBusy(false)
     }
+  }
+
+  // Approve or reject the pending request, then tell the app about it
+  function decide(decision) {
+    runAction(async () => {
+      await incidents.decideApproval(id, decision, decisionNote || undefined)
+      if (onDecided) onDecided()
+    })
   }
 
   function handleLocation() {
@@ -181,12 +193,10 @@ export default function TicketPage({ id, user, onBack, setUnread }) {
                     onChange={(e) => setDecisionNote(e.target.value)}
                     style={{ width: 280 }}
                   />
-                  <Button type="primary" icon={<CheckOutlined />} loading={busy}
-                          onClick={() => runAction(() => incidents.decideApproval(id, 'approve', decisionNote || undefined))}>
+                  <Button type="primary" icon={<CheckOutlined />} loading={busy} onClick={() => decide('approve')}>
                     Approve
                   </Button>
-                  <Button danger icon={<CloseOutlined />} loading={busy}
-                          onClick={() => runAction(() => incidents.decideApproval(id, 'reject', decisionNote || undefined))}>
+                  <Button danger icon={<CloseOutlined />} loading={busy} onClick={() => decide('reject')}>
                     Reject
                   </Button>
                 </Space>
@@ -207,6 +217,7 @@ export default function TicketPage({ id, user, onBack, setUnread }) {
       >
         <Alert error={error} />
         <Descriptions column={{ xs: 1, sm: 2 }} size="small">
+          <Descriptions.Item label="Category">{categoryLabel(ticket.category)}</Descriptions.Item>
           <Descriptions.Item label="Location">{formatLocation(ticket.location)}</Descriptions.Item>
           <Descriptions.Item label="Reported by">
             {personName(ticket.reportedBy)}
@@ -310,6 +321,26 @@ export default function TicketPage({ id, user, onBack, setUnread }) {
               </Form>
             )}
 
+            {canChangeStatus && (
+              <Form layout="inline">
+                <Form.Item label="Category">
+                  <Select
+                    value={category}
+                    onChange={setCategory}
+                    style={{ width: 160 }}
+                    options={CATEGORIES.map((c) => ({ value: c, label: categoryLabel(c) }))}
+                  />
+                </Form.Item>
+                <Button
+                  onClick={() => runAction(() => incidents.updateCategory(id, category))}
+                  loading={busy}
+                  disabled={category === ticket.category}
+                >
+                  Update category
+                </Button>
+              </Form>
+            )}
+
             {canChangeLocation && (
               <Form layout="inline">
                 <Form.Item label="Building">
@@ -355,9 +386,12 @@ export default function TicketPage({ id, user, onBack, setUnread }) {
               </Form>
             )}
           </Space>
-          <Alert error={actionError} />
         </Card>
       )}
+
+      {/* Errors from any action, including posting on the thread below, so
+          everyone sees them, not only staff with the Actions card */}
+      <Alert error={actionError} />
 
       <Card title="Messages" style={{ marginTop: 16 }}>
         {thread.length === 0 && <p className="muted">No messages yet.</p>}

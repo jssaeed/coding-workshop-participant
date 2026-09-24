@@ -2,14 +2,15 @@
 Incidents service: tickets.
 
     POST /api/incidents               file a ticket
-    GET  /api/incidents               one page of tickets (?scope=&status=&priority=&days=&q=&sort=&order=&page=&limit=)
+    GET  /api/incidents               one page of tickets (?scope=&status=&priority=&category=&days=&buildingId=&floor=&q=&sort=&order=&page=&limit=)
     GET  /api/incidents/{id}          one ticket
     PUT  /api/incidents/{id}/assign   assign an engineer (admin)
     PUT  /api/incidents/{id}/status   change the status (assignee or admin)
     PUT  /api/incidents/{id}/priority change the priority (assignee or admin)
+    PUT  /api/incidents/{id}/category change the category (assignee or admin)
     PUT  /api/incidents/{id}/approval approve/reject a blocked/resolved request (admin)
     PUT  /api/incidents/{id}/location move the ticket to another place (admin)
-    GET  /api/incidents/stats/overview   tickets by status (admin)
+    GET  /api/incidents/stats/overview   tickets by status, priority and category (admin)
     GET  /api/incidents/stats/locations  tickets per building / floor / room (admin)
     GET  /api/incidents/stats/engineers  per-engineer workload and resolution time (admin)
     GET  /api/incidents/stats/mine       the caller's own tickets by status
@@ -88,6 +89,12 @@ def route(event):
     if len(segments) == 2 and segments[1] == "priority":
         if method == "PUT":
             return incident_controller.update_priority(event, incident_id)
+        return method_not_allowed(method)
+
+    # /api/incidents/{id}/category
+    if len(segments) == 2 and segments[1] == "category":
+        if method == "PUT":
+            return incident_controller.update_category(event, incident_id)
         return method_not_allowed(method)
 
     # /api/incidents/{id}/location

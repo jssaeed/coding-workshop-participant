@@ -14,8 +14,9 @@ function renderPage(user, current = ticket()) {
   api.incidents.get.mockResolvedValue(current)
   const onBack = vi.fn()
   const setUnread = vi.fn()
-  render(<TicketPage id={current.id} user={user} onBack={onBack} setUnread={setUnread} />)
-  return { onBack, setUnread }
+  const onDecided = vi.fn()
+  render(<TicketPage id={current.id} user={user} onBack={onBack} setUnread={setUnread} onDecided={onDecided} />)
+  return { onBack, setUnread, onDecided }
 }
 
 function actionForm(labelText) {
@@ -36,6 +37,7 @@ describe('reading a ticket', () => {
     expect(await screen.findByText('#12 Leaking pipe')).toBeInTheDocument()
     expect(screen.getByText('Under the sink')).toBeInTheDocument()
     expect(screen.getByText('HQ, floor 3, room 312')).toBeInTheDocument()
+    expect(screen.getByText('Plumbing')).toBeInTheDocument()
     expect(screen.getByText('Ana Lopez (ana@acme.inc)')).toBeInTheDocument()
     expect(screen.getByText('Unassigned')).toBeInTheDocument()
     expect(screen.getByText('On my way up.')).toBeInTheDocument()
@@ -124,10 +126,9 @@ describe('messages', () => {
     expect(screen.getByText(new Date('2026-09-23T10:00:00Z').toLocaleString())).toBeInTheDocument()
   })
 
-  // Known bug: the error box for actions sits inside the "Actions" card,
-  // which only staff get, so an employee whose post fails sees nothing.
-  // Marked as an expected failure until TicketPage moves the Alert.
-  it.fails('shows the backend error when posting fails (employee)', async () => {
+  // The error box sits outside the staff-only "Actions" card, so an
+  // employee whose post fails sees the message too.
+  it('shows the backend error when posting fails (employee)', async () => {
     api.messages.create.mockRejectedValue(new Error('Incident is closed and cannot receive new messages'))
     renderPage(employee)
     await screen.findByText('#12 Leaking pipe')
@@ -197,6 +198,19 @@ describe('admin actions', () => {
     await waitFor(() => expect(api.incidents.updatePriority).toHaveBeenCalledWith(12, 1))
   })
 
+  it('changes category', async () => {
+    api.incidents.updateCategory.mockResolvedValue(ticket({ category: 'hvac' }))
+    renderPage(admin)
+    await screen.findByText('Actions')
+    // "Category" is also a label in the details, so find the form by its button
+    const button = screen.getByRole('button', { name: 'Update category' })
+    const form = button.closest('form')
+    expect(button).toBeDisabled() // still the ticket's own category
+    await chooseOption(within(form).getByRole('combobox'), 'AC / heating')
+    fireEvent.click(button)
+    await waitFor(() => expect(api.incidents.updateCategory).toHaveBeenCalledWith(12, 'hvac'))
+  })
+
   it('moves or clears the location', async () => {
     api.incidents.updateLocation.mockResolvedValue(ticket({ location: null }))
     renderPage(admin)
@@ -210,6 +224,28 @@ describe('admin actions', () => {
     await chooseOption(buildingBox, 'No location')
     fireEvent.click(button)
     await waitFor(() => expect(api.incidents.updateLocation).toHaveBeenCalledWith(12, null))
+  })
+
+  it('moves the ticket to another floor and room', async () => {
+    api.incidents.updateLocation.mockResolvedValue(ticket())
+    renderPage(admin)
+    await screen.findByText('Actions')
+    await waitFor(() => expect(api.buildings.list).toHaveBeenCalled())
+    const form = actionForm('Building')
+    const button = within(form).getByRole('button', { name: 'Update location' })
+
+    // Re-picking the building clears the floor, so the button waits for one
+    const [buildingBox] = within(form).getAllByRole('combobox')
+    await chooseOption(buildingBox, 'HQ')
+    expect(button).toBeDisabled()
+    const floorBox = within(form).getAllByRole('combobox')[1]
+    await chooseOption(floorBox, '3')
+    // floor 3 has 10 rooms, so the room field is a list written the building's way
+    const roomBox = within(form).getAllByRole('combobox')[2]
+    await chooseOption(roomBox, '307')
+    expect(button).toBeEnabled()
+    fireEvent.click(button)
+    await waitFor(() => expect(api.incidents.updateLocation).toHaveBeenCalledWith(12, { buildingId: 2, floor: 3, room: 7 }))
   })
 
   it('shows the action error', async () => {
@@ -254,13 +290,23 @@ describe('pending approval', () => {
 
   it('tells everyone what is waiting, and lets an admin decide', async () => {
     api.incidents.decideApproval.mockResolvedValue(ticket({ status: 'resolved' }))
-    renderPage(admin, waiting)
+    const { onDecided } = renderPage(admin, waiting)
     expect(await screen.findByText('Awaiting approval: Bob Stone asked to mark this ticket resolved')).toBeInTheDocument()
     expect(screen.getByText('Reason: Pipe replaced')).toBeInTheDocument()
 
     await userEvent.type(screen.getByPlaceholderText('Note for the thread (optional)'), 'Good job')
     fireEvent.click(screen.getByRole('button', { name: /Approve/ }))
     await waitFor(() => expect(api.incidents.decideApproval).toHaveBeenCalledWith(12, 'approve', 'Good job'))
+    await waitFor(() => expect(onDecided).toHaveBeenCalledTimes(1)) // the header count is refreshed at once
+  })
+
+  it('rejects a request and tells the app', async () => {
+    api.incidents.decideApproval.mockResolvedValue(ticket())
+    const { onDecided } = renderPage(admin, waiting)
+    await screen.findByText(/Awaiting approval/)
+    fireEvent.click(screen.getByRole('button', { name: /Reject/ }))
+    await waitFor(() => expect(api.incidents.decideApproval).toHaveBeenCalledWith(12, 'reject', undefined))
+    await waitFor(() => expect(onDecided).toHaveBeenCalledTimes(1))
   })
 
   it('an engineer sees the request but no decision buttons', async () => {
@@ -271,5 +317,17 @@ describe('pending approval', () => {
     const form = actionForm('Status')
     await chooseOption(within(form).getByRole('combobox'), 'Resolved')
     expect(within(form).getByRole('button', { name: 'Request resolved' })).toBeDisabled()
+  })
+})
+
+describe('the thread', () => {
+  it('shows the error when earlier messages cannot be loaded', async () => {
+    api.messages.list
+      .mockResolvedValueOnce(threadOf([message()], 5, true))
+      .mockRejectedValueOnce(new Error('Request failed'))
+    renderPage(employee)
+    fireEvent.click(await screen.findByRole('button', { name: /Show earlier messages/ }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Request failed')
+    expect(screen.getByText('On my way up.')).toBeInTheDocument() // what was loaded stays
   })
 })

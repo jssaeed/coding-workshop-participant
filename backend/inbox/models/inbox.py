@@ -101,7 +101,7 @@ def unread_by_ticket(user_id):
 def find_basic_incident(incident_id):
     """Just enough of a ticket to check who may mark it read, or None."""
     return fetch_one(
-        "SELECT id, reported_by, assigned_to FROM incidents WHERE id = %s",
+        "SELECT id, branch_id, reported_by, assigned_to FROM incidents WHERE id = %s",
         (incident_id,),
     )
 

@@ -9,13 +9,13 @@ from function import handler
 PROTECTED = [
     ("POST", "/api/incidents"), ("GET", "/api/incidents"), ("GET", "/api/incidents/1"),
     ("PUT", "/api/incidents/1/assign"), ("PUT", "/api/incidents/1/status"), ("PUT", "/api/incidents/1/approval"),
-    ("PUT", "/api/incidents/1/priority"), ("PUT", "/api/incidents/1/location"),
+    ("PUT", "/api/incidents/1/priority"), ("PUT", "/api/incidents/1/category"), ("PUT", "/api/incidents/1/location"),
     ("GET", "/api/incidents/stats/overview"), ("GET", "/api/incidents/stats/locations"), ("GET", "/api/incidents/stats/mine"),
 ]
 WRONG_METHOD = [
     ("PUT", "/api/incidents"), ("DELETE", "/api/incidents"), ("POST", "/api/incidents/1"), ("DELETE", "/api/incidents/1"),
     ("GET", "/api/incidents/1/assign"), ("POST", "/api/incidents/1/status"), ("GET", "/api/incidents/1/approval"),
-    ("DELETE", "/api/incidents/1/priority"), ("POST", "/api/incidents/1/location"),
+    ("DELETE", "/api/incidents/1/priority"), ("GET", "/api/incidents/1/category"), ("POST", "/api/incidents/1/location"),
     ("POST", "/api/incidents/stats/overview"), ("PUT", "/api/incidents/stats/mine"),
 ]
 NOT_FOUND = ["/api/incidents/abc", "/api/incidents/0", "/api/incidents/1/unknown", "/api/incidents/1/status/x",

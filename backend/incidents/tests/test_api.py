@@ -15,6 +15,10 @@ def people(db):
         "employee": db.create_user("employee"),
         "other_employee": db.create_user("employee"),
         "db_admin": db.create_user("db_admin"),
+        # Miami (branch 2): a facility admin there has no say over branch 1
+        "miami_admin": db.create_user("facility_admin", branch_id=2),
+        "miami_engineer": db.create_user("engineer", branch_id=2),
+        "miami_employee": db.create_user("employee", branch_id=2),
     }
 
 
@@ -42,6 +46,7 @@ class TestCreate:
         assert data["title"] == "Leaking pipe"
         assert data["status"] == "open"
         assert data["priority"] == 3
+        assert data["category"] == "other"
         assert data["description"] == ""
         assert data["location"] is None
         assert data["assignedTo"] is None
@@ -59,6 +64,17 @@ class TestCreate:
         assert data["location"]["floor"] == 3
         assert data["location"]["room"] == 7
         assert data["location"]["roomLabel"] == "307"
+
+    def test_with_a_category(self, api, db, people):
+        status, data = api(handler, "POST", "/api/incidents", user=people["employee"], body={"title": "No power", "category": "electrical"})
+        assert (status, data["category"]) == (201, "electrical")
+        assert db.fetch_one("SELECT category FROM incidents WHERE id = %s", (data["id"],)) == {"category": "electrical"}
+
+    def test_unknown_category_saves_nothing(self, api, db, people):
+        status, data = api(handler, "POST", "/api/incidents", user=people["employee"], body={"title": "Odd", "category": "magic"})
+        assert status == 400
+        assert data["error"].startswith("'category' must be one of: plumbing, electrical")
+        assert db.count("incidents") == 0
 
     def test_the_same_place_is_stored_once(self, api, db, people, hq):
         body = {"title": "A", "location": {"buildingId": hq["id"], "floor": -1}}
@@ -114,7 +130,7 @@ class TestList:
         e, en, oe = people["employee"]["id"], people["engineer"]["id"], people["other_engineer"]["id"]
         return {
             "mine_p3": db.create_incident(e, priority=3, created_days_ago=2),
-            "mine_p1": db.create_incident(e, priority=1, created_days_ago=3),
+            "mine_p1": db.create_incident(e, priority=1, created_days_ago=3, category="plumbing"),
             "mine_p3_newer": db.create_incident(e, priority=3, created_days_ago=1, status="closed"),
             "assigned_to_engineer": db.create_incident(oe, assigned_to=en, status="in_progress", pending_status="resolved", pending_requested_by=en),
             "assigned_to_other": db.create_incident(oe, assigned_to=oe, status="assigned"),
@@ -134,6 +150,66 @@ class TestList:
         assert self.ids(data) == [tickets["mine_p3_newer"]]
         _, data = api(handler, "GET", "/api/incidents", user=people["employee"], query={"priority": "3", "status": "open"})
         assert self.ids(data) == [tickets["mine_p3"]]
+        # several statuses: a ticket in any of them matches
+        _, data = api(handler, "GET", "/api/incidents", user=people["employee"], query={"priority": "3", "status": "open,closed"})
+        assert self.ids(data) == [tickets["mine_p3_newer"], tickets["mine_p3"]]
+        assert api(handler, "GET", "/api/incidents", user=people["employee"], query={"status": "open,done"})[0] == 400
+        _, data = api(handler, "GET", "/api/incidents", user=people["employee"], query={"category": "plumbing"})
+        assert self.ids(data) == [tickets["mine_p1"]]
+        assert data["items"][0]["category"] == "plumbing"
+        _, data = api(handler, "GET", "/api/incidents", user=people["employee"], query={"category": "other"})
+        assert (data["total"], len(data["items"])) == (2, 2)
+
+    def test_days_keeps_only_recent_tickets(self, api, db, people, tickets):
+        # created 1, 2 and 3 days ago: "days=2" keeps the one from yesterday
+        _, data = api(handler, "GET", "/api/incidents", user=people["employee"], query={"days": "2"})
+        assert self.ids(data) == [tickets["mine_p3_newer"]]
+        _, data = api(handler, "GET", "/api/incidents", user=people["employee"], query={"days": "3"})
+        assert self.ids(data) == [tickets["mine_p3_newer"], tickets["mine_p3"]]
+
+    def test_model_with_no_filters_returns_every_ticket(self, db, people, tickets):
+        # The model's own defaults: no WHERE clause, no LIMIT (callers that need every row)
+        from models import incident as incident_model
+        assert incident_model.count() == 6
+        assert len(incident_model.search()) == 6
+
+    def test_building_and_floor_filters_and_location_sort(self, api, db, people, hq):
+        e = people["employee"]["id"]
+        annex = db.create_building(branch_id=1, name="Annex", floors=2, basement_floors=0)
+        room = db.create_location(hq["id"], 3, room=7)
+        basement = db.create_location(hq["id"], -1)
+        annex_floor = db.create_location(annex["id"], 2)
+        in_room = db.create_incident(e, location_id=room["id"], priority=1)
+        in_basement = db.create_incident(e, location_id=basement["id"], priority=2)
+        in_annex = db.create_incident(e, location_id=annex_floor["id"], priority=3)
+        nowhere = db.create_incident(e, priority=4)
+
+        _, data = api(handler, "GET", "/api/incidents", user=people["employee"], query={"buildingId": str(hq["id"])})
+        assert (self.ids(data), data["total"]) == ([in_room, in_basement], 2)
+        _, data = api(handler, "GET", "/api/incidents", user=people["employee"], query={"buildingId": str(hq["id"]), "floor": "-1"})
+        assert (self.ids(data), data["total"]) == ([in_basement], 1)
+        _, data = api(handler, "GET", "/api/incidents", user=people["employee"], query={"buildingId": str(hq["id"]), "floor": "2"})
+        assert (self.ids(data), data["total"]) == ([], 0)
+        # Other filters still apply on top
+        _, data = api(handler, "GET", "/api/incidents", user=people["employee"], query={"buildingId": str(hq["id"]), "priority": "2"})
+        assert self.ids(data) == [in_basement]
+
+        # Sorted by place: building name, then floor, then room; no location last either way
+        _, data = api(handler, "GET", "/api/incidents", user=people["employee"], query={"sort": "location"})
+        assert self.ids(data) == [in_annex, in_basement, in_room, nowhere]
+        _, data = api(handler, "GET", "/api/incidents", user=people["employee"], query={"sort": "location", "order": "desc"})
+        assert self.ids(data) == [in_room, in_basement, in_annex, nowhere]
+
+    def test_building_filter_errors(self, api, db, people, hq):
+        away = db.create_building(branch_id=2, name="Miami office", floors=1, basement_floors=0)
+        status, data = api(handler, "GET", "/api/incidents", user=people["employee"], query={"buildingId": "999"})
+        assert (status, data) == (400, {"error": "'buildingId' does not match a known building"})
+        status, data = api(handler, "GET", "/api/incidents", user=people["employee"], query={"buildingId": str(away["id"])})
+        assert (status, data) == (400, {"error": "'buildingId' is not a building at your branch"})
+        status, data = api(handler, "GET", "/api/incidents", user=people["employee"], query={"floor": "1"})
+        assert (status, data) == (400, {"error": "'floor' needs a 'buildingId'"})
+        status, data = api(handler, "GET", "/api/incidents", user=people["employee"], query={"buildingId": str(hq["id"]), "floor": "5"})
+        assert (status, data) == (400, {"error": "'floor' must be between B1 and 3 (there is no floor 0)"})
 
     def test_assigned_scope(self, api, db, people, tickets):
         _, data = api(handler, "GET", "/api/incidents", user=people["engineer"], query={"scope": "assigned"})
@@ -198,6 +274,71 @@ class TestList:
         assert search("lopez")[1] == 3                        # the reporter
         _, data = api(handler, "GET", "/api/incidents", user=reporter, query={"q": "  "})
         assert data["total"] == 3                             # blank search means no search
+
+
+class TestBranches:
+    """Tickets belong to the branch they were filed at; admins only reach their own."""
+
+    def test_a_ticket_is_filed_at_the_reporters_branch(self, api, db, people):
+        status, data = api(handler, "POST", "/api/incidents", user=people["miami_employee"], body={"title": "AC broken"})
+        assert (status, data["branchId"]) == (201, 2)
+        assert db.fetch_one("SELECT branch_id FROM incidents WHERE id = %s", (data["id"],)) == {"branch_id": 2}
+
+    def test_admin_at_another_branch_cannot_see_or_change_a_ticket(self, api, db, people, hq):
+        ticket = db.create_incident(people["employee"]["id"], assigned_to=people["engineer"]["id"],
+                                    status="in_progress", pending_status="resolved", pending_requested_by=people["engineer"]["id"])
+        miami = people["miami_admin"]
+        requests = [
+            ("GET", f"/api/incidents/{ticket}", None),
+            ("PUT", f"/api/incidents/{ticket}/assign", {"assigneeId": None}),
+            ("PUT", f"/api/incidents/{ticket}/status", {"status": "blocked"}),
+            ("PUT", f"/api/incidents/{ticket}/priority", {"priority": 1}),
+            ("PUT", f"/api/incidents/{ticket}/approval", {"decision": "approve"}),
+            ("PUT", f"/api/incidents/{ticket}/location", {"location": None}),
+        ]
+        for method, path, body in requests:
+            status, data = api(handler, method, path, user=miami, body=body)
+            assert (status, data) == (404, {"error": "Incident not found"}), path
+        before = ticket_state(db, ticket)
+        assert (before["status"], before["priority"], before["pending_status"]) == ("in_progress", 3, "resolved")
+        assert messages_on(db, ticket) == []
+
+    def test_admin_scopes_only_list_their_own_branch(self, api, db, people):
+        princeton = db.create_incident(people["employee"]["id"])
+        miami = db.create_incident(people["miami_employee"]["id"], pending_status="blocked", pending_requested_by=people["miami_engineer"]["id"])
+        for scope in ("all", "unassigned", "pending"):
+            _, data = api(handler, "GET", "/api/incidents", user=people["admin"], query={"scope": scope})
+            assert [t["id"] for t in data["items"]] == ([princeton] if scope != "pending" else []), scope
+            _, data = api(handler, "GET", "/api/incidents", user=people["miami_admin"], query={"scope": scope})
+            assert [t["id"] for t in data["items"]] == [miami], scope
+            assert data["items"][0]["branchId"] == 2
+
+    def test_assignee_must_work_at_the_tickets_branch(self, api, db, people):
+        ticket = db.create_incident(people["employee"]["id"])
+        status, data = api(handler, "PUT", f"/api/incidents/{ticket}/assign", user=people["admin"], body={"assigneeId": people["miami_engineer"]["id"]})
+        assert (status, data) == (400, {"error": "Tickets can only be assigned to staff at the ticket's branch"})
+        assert ticket_state(db, ticket)["assigned_to"] is None
+        assert messages_on(db, ticket) == []
+
+    def test_stats_count_only_the_admins_branch(self, api, db, people, hq):
+        miami_hq = db.create_building(branch_id=2, name="Miami HQ", floors=2)
+        spot = db.create_location(miami_hq["id"], 1)
+        db.create_incident(people["employee"]["id"], status="resolved", assigned_to=people["engineer"]["id"])
+        db.create_incident(people["miami_employee"]["id"], status="open", location_id=spot["id"], assigned_to=people["miami_engineer"]["id"])
+        db.create_incident(people["miami_employee"]["id"], status="open", location_id=spot["id"])
+
+        _, result = api(handler, "GET", "/api/incidents/stats/overview", user=people["miami_admin"])
+        assert (result["total"], result["byStatus"]["open"], result["resolution"]["resolvedCount"]) == (2, 2, 0)
+        _, result = api(handler, "GET", "/api/incidents/stats/overview", user=people["admin"])
+        assert result["total"] == 1
+
+        _, result = api(handler, "GET", "/api/incidents/stats/engineers", user=people["miami_admin"])
+        assert [(row["id"], row["assigned"]) for row in result] == [(people["miami_engineer"]["id"], 1)]
+
+        _, result = api(handler, "GET", "/api/incidents/stats/locations", user=people["miami_admin"])
+        assert result["items"] == [{"id": miami_hq["id"], "name": "Miami HQ", "count": 2}]
+        status, data = api(handler, "GET", "/api/incidents/stats/locations", user=people["miami_admin"], query={"buildingId": str(hq["id"])})
+        assert (status, data) == (404, {"error": "Building not found"})
 
 
 class TestAssign:
@@ -318,6 +459,33 @@ class TestApproval:
         assert api(handler, "PUT", "/api/incidents/999/approval", user=people["admin"], body={"decision": "approve"})[0] == 404
 
 
+class TestApprovalNotes:
+    """The optional note travels with the request, the approval and the rejection."""
+
+    def test_request_with_a_note(self, api, db, people):
+        ticket = db.create_incident(people["employee"]["id"], assigned_to=people["engineer"]["id"], status="in_progress")
+        status, data = api(handler, "PUT", f"/api/incidents/{ticket}/status", user=people["engineer"], body={"status": "blocked", "note": "Parts missing"})
+        assert (status, data["status"], data["pendingApproval"]["note"]) == (200, "in_progress", "Parts missing")
+        assert ticket_state(db, ticket)["pending_note"] == "Parts missing"
+        assert messages_on(db, ticket) == [{"user_id": people["engineer"]["id"],
+                                           "message": f"Ticket #{ticket}: requested blocked, awaiting facility admin approval - Parts missing"}]
+
+    def test_approve_with_a_note(self, api, db, people):
+        ticket = db.create_incident(people["employee"]["id"], assigned_to=people["engineer"]["id"], status="in_progress",
+                                    pending_status="blocked", pending_requested_by=people["engineer"]["id"])
+        status, data = api(handler, "PUT", f"/api/incidents/{ticket}/approval", user=people["admin"], body={"decision": "approve", "note": "Fine"})
+        assert (status, data["status"], data["pendingApproval"]) == (200, "blocked", None)
+        assert messages_on(db, ticket) == [{"user_id": people["admin"]["id"], "message": f"Ticket #{ticket}: status changed to blocked (approved) - Fine"}]
+
+    def test_reject_with_a_note(self, api, db, people):
+        ticket = db.create_incident(people["employee"]["id"], assigned_to=people["engineer"]["id"], status="in_progress",
+                                    pending_status="resolved", pending_requested_by=people["engineer"]["id"])
+        status, data = api(handler, "PUT", f"/api/incidents/{ticket}/approval", user=people["admin"], body={"decision": "reject", "note": "Not yet"})
+        assert (status, data["status"], data["pendingApproval"]) == (200, "in_progress", None)
+        assert ticket_state(db, ticket)["pending_status"] is None
+        assert messages_on(db, ticket) == [{"user_id": people["admin"]["id"], "message": f"Ticket #{ticket}: request to mark resolved rejected - Not yet"}]
+
+
 class TestPriority:
     def test_assignee_and_admin_change_it_with_a_message(self, api, db, people):
         ticket = db.create_incident(people["employee"]["id"], assigned_to=people["engineer"]["id"], status="assigned", priority=3)
@@ -332,6 +500,26 @@ class TestPriority:
         assert api(handler, "PUT", f"/api/incidents/{ticket}/priority", user=people["other_engineer"], body={"priority": 1})[0] == 403
         assert api(handler, "PUT", f"/api/incidents/{ticket}/priority", user=people["employee"], body={"priority": 1})[0] == 403
         assert ticket_state(db, ticket)["priority"] == 3
+
+
+class TestCategory:
+    def test_assignee_and_admin_change_it_with_a_message(self, api, db, people):
+        ticket = db.create_incident(people["employee"]["id"], assigned_to=people["engineer"]["id"], status="assigned")
+        status, data = api(handler, "PUT", f"/api/incidents/{ticket}/category", user=people["engineer"], body={"category": "plumbing"})
+        assert (status, data["category"]) == (200, "plumbing")
+        assert messages_on(db, ticket) == [{"user_id": people["engineer"]["id"], "message": f"Ticket #{ticket}: category changed to plumbing"}]
+        assert api(handler, "PUT", f"/api/incidents/{ticket}/category", user=people["admin"], body={"category": "hvac"})[1]["category"] == "hvac"
+        assert db.fetch_one("SELECT category FROM incidents WHERE id = %s", (ticket,)) == {"category": "hvac"}
+
+    def test_errors(self, api, db, people):
+        ticket = db.create_incident(people["employee"]["id"], assigned_to=people["engineer"]["id"], status="assigned", category="plumbing")
+        assert api(handler, "PUT", f"/api/incidents/{ticket}/category", user=people["engineer"], body={"category": "plumbing"})[1] == {"error": "Incident is already in the plumbing category"}
+        assert api(handler, "PUT", f"/api/incidents/{ticket}/category", user=people["engineer"], body={"category": "magic"})[0] == 400
+        assert api(handler, "PUT", f"/api/incidents/{ticket}/category", user=people["other_engineer"], body={"category": "hvac"})[0] == 403
+        assert api(handler, "PUT", f"/api/incidents/{ticket}/category", user=people["employee"], body={"category": "hvac"})[0] == 403
+        assert api(handler, "PUT", "/api/incidents/999/category", user=people["admin"], body={"category": "hvac"})[0] == 404
+        assert db.fetch_one("SELECT category FROM incidents WHERE id = %s", (ticket,)) == {"category": "plumbing"}
+        assert messages_on(db, ticket) == []
 
 
 class TestLocation:
@@ -363,19 +551,24 @@ class TestStats:
         room = db.create_location(hq["id"], 3, room=7)
         floor = db.create_location(hq["id"], 3)
         basement = db.create_location(hq["id"], -1)
-        db.create_incident(e, status="open", location_id=room["id"])
-        db.create_incident(e, status="open", location_id=room["id"], assigned_to=en)
-        db.create_incident(e, status="in_progress", location_id=floor["id"], assigned_to=en)
-        db.create_incident(en, status="closed", location_id=basement["id"])
-        db.create_incident(en, status="resolved")
-        db.create_incident(e, status="open", created_days_ago=40)  # outside the default 30 days
+        db.create_incident(e, status="open", location_id=room["id"], priority=1, category="plumbing")
+        db.create_incident(e, status="open", location_id=room["id"], assigned_to=en, priority=1, category="plumbing")
+        db.create_incident(e, status="in_progress", location_id=floor["id"], assigned_to=en, priority=3, category="electrical")
+        db.create_incident(en, status="closed", location_id=basement["id"], priority=5, category="hvac")
+        db.create_incident(en, status="resolved", priority=3)
+        db.create_incident(e, status="open", created_days_ago=40, priority=2, category="safety")  # outside the default 30 days
 
     def test_overview_counts_the_last_n_days(self, api, db, people, data):
         status, result = api(handler, "GET", "/api/incidents/stats/overview", user=people["admin"])
         assert status == 200
-        assert result == {"total": 5, "byStatus": {"open": 2, "assigned": 0, "in_progress": 1, "blocked": 0, "resolved": 1, "closed": 1}}
+        assert result["total"] == 5
+        assert result["byStatus"] == {"open": 2, "assigned": 0, "in_progress": 1, "blocked": 0, "resolved": 1, "closed": 1}
+        assert result["byPriority"] == {"1": 2, "2": 0, "3": 2, "4": 0, "5": 1}
+        assert result["byCategory"] == {"plumbing": 2, "electrical": 1, "hvac": 1, "structural": 0, "doors_and_locks": 0, "elevators": 0,
+                                        "furniture": 0, "appliances": 0, "safety": 0, "cleaning": 0, "other": 1}
+        assert result["resolution"]["resolvedCount"] == 0  # the test rows have no resolved_at stamp
         _, result = api(handler, "GET", "/api/incidents/stats/overview", user=people["admin"], query={"days": "365"})
-        assert result["total"] == 6
+        assert (result["total"], result["byPriority"]["2"], result["byCategory"]["safety"]) == (6, 1, 1)
 
     def test_locations_drill_down(self, api, db, people, hq, data):
         _, result = api(handler, "GET", "/api/incidents/stats/locations", user=people["admin"])

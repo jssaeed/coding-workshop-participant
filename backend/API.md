@@ -36,7 +36,7 @@ A missing, malformed, or expired access token returns `401` (with `"Token has ex
 |---|---|
 | `employee` | File tickets, see and message on their own tickets |
 | `engineer` | Everything above, plus work tickets assigned to them |
-| `facility_admin` | Everything: all tickets, assignment, buildings, and the accounts **at their branch** (any role except `db_admin`) |
+| `facility_admin` | Everything **at their branch**: every ticket filed there, assignment (to staff at that branch), statistics, buildings, and the accounts (any role except `db_admin`). Tickets at another branch are invisible to them, as if they did not exist |
 | `db_admin` | Manage accounts and roles across **every branch**, including `facility_admin` and `db_admin`, and run the migration. Not facilities staff: no ticket or building powers beyond an employee's |
 
 Signup always creates an `employee`. One `db_admin` account is created by the migration on every deployment: `admin@admin.com` / `admin123`, name `admin`, at Princeton-Plainsboro. (Fixed on purpose for this workshop project; in a real system the first admin is created by someone with direct database access and the password comes from a secret.)
@@ -255,7 +255,9 @@ Admin only, own branch only. `204`. Errors: `403` another branch · `404` no suc
   "description": "Under the sink in the 3rd floor kitchen",
   "status": "in_progress",
   "priority": 2,
+  "category": "plumbing",
   "location": { "id": 1, "building": { "id": 2, "name": "HQ" }, "floor": 3, "room": 12, "roomLabel": "312" },
+  "branchId": 1,                                                        // the branch the ticket was filed at (the reporter's)
   "reportedBy": { "id": 4, "name": "Ana", "email": "ana@acme.inc" },   // null if that account was deleted
   "assignedTo": { "id": 7, "name": "Bob", "email": "bob@example.com" },
   "createdAt": "2026-09-22T14:10:02.101Z",
@@ -266,6 +268,7 @@ Admin only, own branch only. `204`. Errors: `403` another branch · `404` no suc
 
 - `status`: `open` → `assigned` → `in_progress` → `blocked` / `resolved` → `closed`. New tickets are `open`; assigning an engineer moves an open ticket to `assigned` automatically, and unassigning moves an `assigned` ticket back to `open`.
 - `priority`: `1` (most urgent) to `5`. Defaults to `3`.
+- `category`: what kind of problem it is, one of `plumbing`, `electrical`, `hvac` (heating, ventilation and air conditioning), `structural`, `doors_and_locks`, `elevators`, `furniture`, `appliances`, `safety`, `cleaning`, `other`. Defaults to `other`. The list lives in `backend/incidents/models/incident.py` and as the CHECK rule on the column.
 - `location`, `assignedTo`, `resolvedAt`, and `location.room` are `null` when not set. `floor` and `room` are numbers.
 - `resolvedAt` is stamped automatically when status becomes `resolved` or `closed`, and cleared if the ticket is reopened.
 
@@ -278,15 +281,16 @@ Any signed-in user. The reporter is taken from the token.
   "title": "Leaking pipe",
   "description": "optional",
   "priority": 2,
+  "category": "plumbing",
   "location": { "buildingId": 2, "floor": 3, "room": 12 }
 }
 ```
 
-`location` is optional. `buildingId` must be a building at your branch; `floor` is `1..floors` or `-1..-basementFloors` (no 0); `room` is an optional room index, at most the floor's room count when one is set. Responses add `roomLabel`, the room as the building writes it (`312` when it numbers rooms by floor, else `12`). The same place is stored once and reused by every ticket reported there.
+`category` is optional and defaults to `other`. `location` is optional. `buildingId` must be a building at your branch; `floor` is `1..floors` or `-1..-basementFloors` (no 0); `room` is an optional room index, at most the floor's room count when one is set. Responses add `roomLabel`, the room as the building writes it (`312` when it numbers rooms by floor, else `12`). The same place is stored once and reused by every ticket reported there.
 
 `201` → the ticket.
 
-Errors: `400` missing title, priority outside 1–5, unknown `buildingId` or one at another branch, floor outside the building's range (floors are `1..floors` and `-1..-basementFloors`; there is no 0), non-numeric room, or a room above the floor's room count.
+Errors: `400` missing title, priority outside 1–5, a `category` outside the list (`'category' must be one of: plumbing, electrical, ...`), unknown `buildingId` or one at another branch, floor outside the building's range (floors are `1..floors` and `-1..-basementFloors`; there is no 0), non-numeric room, or a room above the floor's room count.
 
 ### `GET /api/incidents` — one page of tickets
 
@@ -294,21 +298,26 @@ Errors: `400` missing title, priority outside 1–5, unknown `buildingId` or one
 | --- | --- | --- |
 | *(none)* or `?scope=mine` | anyone | tickets you reported |
 | `?scope=assigned` | engineer, admin | tickets assigned to you |
-| `?scope=unassigned` | admin | unfinished tickets with no engineer |
-| `?scope=pending` | admin | tickets with a blocked/resolved request awaiting approval |
-| `?scope=all` | admin | every ticket |
+| `?scope=unassigned` | admin | unfinished tickets with no engineer, at your branch |
+| `?scope=pending` | admin | tickets with a blocked/resolved request awaiting approval, at your branch |
+| `?scope=all` | admin | every ticket at your branch |
+
+A ticket belongs to the branch it was filed at (`branchId`, the reporter's branch). The three admin scopes never show another branch's tickets: a Miami admin sees Miami's queue only.
 
 Narrow any scope further:
 
 | Query | Meaning |
 | --- | --- |
-| `status=open`, `priority=2` | one status, one priority |
+| `status=open`, `priority=2`, `category=plumbing` | one status, one priority, one category |
+| `status=open,in_progress` | tickets in any of the listed statuses |
 | `days=14` | created in the last N days (1–365); the site uses 14 by default |
+| `buildingId=2` | in one building (it must be at your branch) |
+| `buildingId=2&floor=3` | on one floor of it (`floor=-1` is B1); `floor` needs `buildingId` and must be a floor the building has |
 | `q=leak kitchen` | every word appears in the title, description, reporter's or assignee's name, or building name; a word like `#12` or `12` also matches the ticket number |
-| `sort=priority` (default: most urgent first, then newest), `created`, `updated`, `id`, `title` | with `order=asc|desc` |
+| `sort=priority` (default: most urgent first, then newest), `created`, `updated`, `id`, `title`, `location` (building, floor, room; tickets with no location last) | with `order=asc|desc` |
 | `page=`, `limit=` | see [Lists and pages](#lists-and-pages) |
 
-`200` → `{ "items": [tickets], "total", "page", "limit", "pages" }`. `403` for a scope your role can't use.
+`200` → `{ "items": [tickets], "total", "page", "limit", "pages" }`. `403` for a scope your role can't use. `400` `'buildingId' must be a positive whole number`, `'buildingId' does not match a known building`, `'buildingId' is not a building at your branch`, `'floor' needs a 'buildingId'`, `'floor' must be between B1 and 3 (there is no floor 0)`.
 
 The Approvals badge asks for `?scope=pending&limit=1` and reads `total`: the cheapest way to count.
 
@@ -324,7 +333,7 @@ Admin only.
 { "assigneeId": 7 }
 ```
 
-Send `"assigneeId": null` to unassign. The assignee must be an engineer or admin. An `open` ticket becomes `assigned`; an `assigned` ticket that is unassigned becomes `open` again; other statuses are left as they are.
+Send `"assigneeId": null` to unassign. The assignee must be an engineer or admin **at the ticket's branch** (the assign dropdown lists your branch's staff, so this only matters for hand-made requests). An `open` ticket becomes `assigned`; an `assigned` ticket that is unassigned becomes `open` again; other statuses are left as they are.
 
 Also posts a message on the ticket, from the caller, so the new assignee and the reporter see it in their inbox:
 
@@ -332,7 +341,7 @@ Also posts a message on the ticket, from the caller, so the new assignee and the
 
 `200` → the ticket.
 
-Errors: `400` missing `assigneeId`, unknown user, the user is an employee, or the ticket already has that assignment · `404` no such ticket.
+Errors: `400` missing `assigneeId`, unknown user, the user is an employee, the user works at another branch (`Tickets can only be assigned to staff at the ticket's branch`), or the ticket already has that assignment · `404` no such ticket, or a ticket at another branch.
 
 ### `PUT /api/incidents/{id}/status` — change status
 
@@ -352,7 +361,7 @@ Also posts a message on the ticket, from the caller, in the same transaction:
 
 `open` and `assigned` follow the assignment: a ticket with an engineer cannot be set to `open`, and a ticket without one cannot be set to `assigned`.
 
-Errors: `400` unknown status, the ticket is already in that status, the same request is already pending, `open` requested while an engineer is assigned, or `assigned` requested with no engineer · `403` an engineer who is not assigned to this ticket · `404` no such ticket.
+Errors: `400` unknown status, the ticket is already in that status, the same request is already pending, `open` requested while an engineer is assigned, or `assigned` requested with no engineer · `403` an engineer who is not assigned to this ticket · `404` no such ticket, or an admin at another branch.
 
 ### `PUT /api/incidents/{id}/approval` — approve or reject a request
 
@@ -364,7 +373,7 @@ Admin only.
 
 `approve` applies the requested status (stamping `resolvedAt` for resolved) and posts "Ticket #12: status changed to resolved (approved)". `reject` clears the request and posts "Ticket #12: request to mark resolved rejected". Either message carries the note.
 
-`200` → the ticket. Errors: `400` unknown decision, or nothing pending · `403` not an admin · `404` no such ticket.
+`200` → the ticket. Errors: `400` unknown decision, or nothing pending · `403` not an admin · `404` no such ticket, or a ticket at another branch.
 
 ### `PUT /api/incidents/{id}/priority` — change priority
 
@@ -380,7 +389,23 @@ Also posts a message on the ticket, from the caller, in the same transaction:
 
 `200` → the ticket.
 
-Errors: `400` priority missing or outside 1–5, or the ticket already has that priority · `403` an engineer who is not assigned to this ticket · `404` no such ticket.
+Errors: `400` priority missing or outside 1–5, or the ticket already has that priority · `403` an engineer who is not assigned to this ticket · `404` no such ticket, or an admin at another branch.
+
+### `PUT /api/incidents/{id}/category` — change category
+
+Assigned engineer or admin (same rules as priority).
+
+```json
+{ "category": "hvac" }
+```
+
+Adds a message to the thread, using the name people read (`hvac` is written `AC / heating`):
+
+> Ticket #12: category changed to AC / heating
+
+`200` → the ticket.
+
+Errors: `400` category missing or outside the list, or the ticket is already in that category (`Incident is already in the plumbing category`) · `403` an engineer who is not assigned to this ticket · `404` no such ticket, or an admin at another branch.
 
 ### `PUT /api/incidents/{id}/location` — move the ticket
 
@@ -396,19 +421,23 @@ Also posts a message on the ticket, from the caller, in the same transaction:
 
 `200` → the ticket.
 
-Errors: `400` `location` key missing, unknown `buildingId`, floor outside the building's range, non-numeric room, or the ticket already has that location · `403` not an admin · `404` no such ticket.
+Errors: `400` `location` key missing, unknown `buildingId`, floor outside the building's range, non-numeric room, or the ticket already has that location · `403` not an admin · `404` no such ticket, or a ticket at another branch.
 
-### `GET /api/incidents/stats/overview` — all tickets by status
+### `GET /api/incidents/stats/overview` — the branch's tickets by status, priority and category
 
-Admin only. `?days=N` (default 30, max 365) counts tickets created in the last N days.
+Admin only, and only the tickets at the admin's own branch. `?days=N` (default 30, max 365) counts tickets created in the last N days.
 
 ```json
 {
   "total": 42,
   "byStatus": { "open": 20, "assigned": 5, "in_progress": 9, "blocked": 3, "resolved": 3, "closed": 2 },
+  "byPriority": { "1": 4, "2": 7, "3": 20, "4": 6, "5": 5 },
+  "byCategory": { "plumbing": 9, "electrical": 7, "hvac": 6, "structural": 5, "doors_and_locks": 3, "elevators": 1, "furniture": 4, "appliances": 3, "safety": 2, "cleaning": 1, "other": 1 },
   "resolution": { "averageSeconds": 93600.0, "resolvedCount": 5 }
 }
 ```
+
+`byPriority` runs from 1 (most urgent) to 5 and, like `byStatus`, always lists every value (feeds the priority chart on the Statistics page). `byCategory` lists every category in the order of the ticket object's list, with `0` when empty (feeds the category ring on the Statistics page).
 
 Every status is always present, with `0` when empty. `resolution` averages `resolvedAt - createdAt` over the tickets in the range that have been resolved; `averageSeconds` is `null` when none have. Errors: `400` days outside 1–365 · `403` not an admin.
 
@@ -422,7 +451,7 @@ Admin only, same `?days=` as above. Drill down by adding parameters:
 | `?buildingId=1` | `floor` | `[{ "floor": 3, "count": 4 }]`, plus `building: { id, name }` |
 | `?buildingId=1&floor=3` | `room` | `[{ "room": 12, "label": "312", "count": 2 }, { "room": null, "label": null, "count": 1 }]`, plus `building` and `floor` |
 
-Buildings are sorted by count, floors and rooms by number. `null` room means the ticket gave no room. Errors: `400` bad parameter · `403` not an admin · `404` unknown building.
+Only the admin's own branch is counted, and `buildingId` must be a building there. Buildings are sorted by count, floors and rooms by number. `null` room means the ticket gave no room. Errors: `400` bad parameter · `403` not an admin · `404` unknown building, or one at another branch.
 
 ### `GET /api/incidents/stats/engineers` — per-engineer workload
 
@@ -559,14 +588,14 @@ curl -s -X POST $API/api/migrations -H "Authorization: Bearer $TOKEN"
 
 ### `POST /api/migrations/seed` — load the sample data (temporary)
 
-Db admin only. **Replaces** every account, building, ticket and message with the sample set in `backend/migrations/seed.sql` (the local development data: the House cast accounts, buildings A/B/C and about 80 tickets). Sessions are cleared too, so log in again afterwards. Branches are untouched.
+Db admin only. **Replaces** every account, building, ticket and message with the sample set in `backend/migrations/seed.sql` (the local development data: the House cast accounts, buildings A/B/C at Princeton-Plainsboro with 81 tickets, the Dexter cast at Miami with 8 tickets in the Violent Crimes building, 18 tickets assigned in all and the rest open; resolved tickets took from about an hour to six days; every ticket has a category chosen from its title, so the category chart has a spread). Sessions are cleared too, so log in again afterwards. Branches are untouched. The id counters are moved past the loaded ids (the migration does the same on every run), so rows added afterwards never collide with the sample set.
 
 ```sh
 curl -s -X POST $API/api/migrations/seed -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" -d '{"confirm":"RESET"}'
 ```
 
-`200` → `{ "message": "Sample data loaded", "rows": { "users": 13, "incidents": 81, ... } }`. Errors: `400` without `"confirm": "RESET"` · `401`/`403` not a db admin.
+`200` → `{ "message": "Sample data loaded", "rows": { "users": 13, "incidents": 89, ... } }`. Errors: `400` without `"confirm": "RESET"` · `401`/`403` not a db admin.
 
 This exists for the workshop deployment only; real sample data belongs in test fixtures.
 

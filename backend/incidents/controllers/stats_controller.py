@@ -1,8 +1,9 @@
 """
 Stats controller: numbers for the Statistics page.
 
-- Admins see everything: totals by status, and a drill-down of tickets per
-  building, then per floor, then per room.
+- Admins see their whole branch: totals by status, priority and category,
+  and a drill-down of tickets per building, then per floor, then per room. Tickets at other
+  branches are never counted.
 - Everyone sees their own numbers: tickets they reported by status, and, for
   engineers and admins, tickets assigned to them by status.
 
@@ -14,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 
 from lib import auth
 from lib.labels import room_label
-from lib.request import query_params
+from lib.request import positive_int_param, query_params
 from lib.responses import HttpError, ok
 from models import building as building_model
 from models import stats as stats_model
@@ -32,40 +33,35 @@ def since_from_query(params):
     return datetime.now(timezone.utc) - timedelta(days=int(days))
 
 
-def positive_int_param(params, name):
-    """Read an optional ?name=N (a positive whole number), or None."""
-    value = params.get(name)
-    if value is None:
-        return None
-    if not value.isdigit() or int(value) < 1:
-        raise HttpError(400, f"'{name}' must be a positive whole number")
-    return int(value)
-
-
 def overview(event):
     """
-    GET /api/incidents/stats/overview?days=30 - all tickets by status, plus
-    how long tickets took to resolve. Admin only.
+    GET /api/incidents/stats/overview?days=30 - the branch's tickets by
+    status, by priority and by category, plus how long they took to
+    resolve. Admin only.
     """
     caller = auth.current_user(event)
     auth.require_role(caller, [auth.ROLE_ADMIN])
 
     since = since_from_query(query_params(event))
-    result = stats_view.status_counts(stats_model.count_by_status(since))
-    result["resolution"] = stats_view.resolution(stats_model.resolution_time(since))
+    branch_id = caller["branch_id"]
+    result = stats_view.status_counts(stats_model.count_by_status(since, branch_id=branch_id))
+    result["byPriority"] = stats_view.priority_counts(stats_model.count_by_priority(since, branch_id))
+    result["byCategory"] = stats_view.category_counts(stats_model.count_by_category(since, branch_id))
+    result["resolution"] = stats_view.resolution(stats_model.resolution_time(since, branch_id))
     return ok(result)
 
 
 def engineers(event):
     """
     GET /api/incidents/stats/engineers?days=30 - per engineer: tickets
-    assigned, tickets resolved and average resolution time. Admin only.
+    assigned, tickets resolved and average resolution time, over the
+    branch's tickets. Admin only.
     """
     caller = auth.current_user(event)
     auth.require_role(caller, [auth.ROLE_ADMIN])
 
     since = since_from_query(query_params(event))
-    return ok(stats_view.engineers(stats_model.engineer_workload(since)))
+    return ok(stats_view.engineers(stats_model.engineer_workload(since, caller["branch_id"])))
 
 
 def locations(event):
@@ -73,7 +69,7 @@ def locations(event):
     GET /api/incidents/stats/locations?days=30            tickets per building
     GET ...?buildingId=2                                  tickets per floor in that building
     GET ...?buildingId=2&floor=3                          tickets per room on that floor
-    Admin only.
+    Admin only, own branch only: a building at another branch is a 404.
     """
     caller = auth.current_user(event)
     auth.require_role(caller, [auth.ROLE_ADMIN])
@@ -84,10 +80,11 @@ def locations(event):
     floor = positive_int_param(params, "floor")
 
     if building_id is None:
-        return ok({"level": "building", "items": stats_view.building_counts(stats_model.count_by_building(since))})
+        items = stats_view.building_counts(stats_model.count_by_building(since, caller["branch_id"]))
+        return ok({"level": "building", "items": items})
 
     building = building_model.find_by_id(building_id)
-    if building is None:
+    if building is None or building["branch_id"] != caller["branch_id"]:
         raise HttpError(404, "Building not found")
 
     if floor is None:

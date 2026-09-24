@@ -107,6 +107,26 @@ class TestFailures:
         assert data["error"] == "Migration failed"
         assert connection.rollbacks == 1
 
+    def test_a_failed_seed_load_rolls_back_and_reports_500(self, guarded, monkeypatch):
+        sign_in_as(monkeypatch, "db_admin")
+        connection = FakeConnection()
+        monkeypatch.setattr(function, "get_connection", lambda: connection)
+
+        def broken():
+            raise RuntimeError("could not open seed.sql")
+
+        monkeypatch.setattr(function, "load_seed", broken)
+        status, data = call(function.handler, "POST", "/api/migrations/seed", token="x", body={"confirm": "RESET"})
+        assert (status, data["error"]) == (500, "Migration failed")
+        assert connection.rollbacks == 1
+
+    def test_load_seed_rolls_back_its_own_transaction_when_a_statement_fails(self, no_database, monkeypatch):
+        # The fake connection refuses to run SQL, so the TRUNCATE fails at once
+        monkeypatch.setattr(function, "get_connection", lambda: no_database)
+        with pytest.raises(Exception):
+            function.load_seed()
+        assert (no_database.commits, no_database.rollbacks) == (0, 1)
+
     def test_http_errors_keep_their_status(self, guarded, monkeypatch):
         def denied(event):
             raise HttpError(401, "Token has expired")

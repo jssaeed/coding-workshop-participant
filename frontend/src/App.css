@@ -382,6 +382,11 @@
   margin-bottom: 16px;
 }
 
+/* Cards side by side in a row take the height of the tallest one */
+.full-height-card {
+  height: 100%;
+}
+
 .tile-value {
   font-size: 40px;
   font-weight: 600;
@@ -393,6 +398,29 @@
   color: #6b7280;
   font-size: 13px;
   margin-top: 4px;
+}
+
+/* A tile that opens the tickets behind its number */
+.tile-clickable {
+  display: block;
+  width: 100%;
+  padding: 4px 6px;
+  margin: -4px -6px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+.tile-clickable:hover,
+.tile-clickable:focus-visible {
+  background: #f3f4f6;
+  outline: none;
+}
+.tile-clickable:hover .tile-value,
+.tile-clickable:focus-visible .tile-value {
+  color: #1e3a5f;
 }
 
 .chart {
@@ -447,6 +475,28 @@
 
 .chart-legend tr.legend-dim td {
   opacity: 0.45;
+}
+
+/* A donut whose arcs and legend labels open the tickets they count */
+.donut-clickable svg g[role="button"] {
+  cursor: pointer;
+}
+.donut-clickable svg g[role="button"]:focus {
+  outline: none;
+}
+.legend-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.legend-link:hover,
+.legend-link:focus-visible {
+  color: #1e3a5f;
+  text-decoration: underline;
+  outline: none;
 }
 
 .legend-swatch {

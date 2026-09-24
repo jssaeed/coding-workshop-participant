@@ -9,7 +9,7 @@ from models import incident as incident_model
 from models import message as message_model
 from views import message_view
 
-INCIDENT = {"id": 12, "status": "open", "reported_by": 4, "assigned_to": 7}
+INCIDENT = {"id": 12, "status": "open", "branch_id": 1, "reported_by": 4, "assigned_to": 7}
 
 
 @pytest.fixture
@@ -48,6 +48,12 @@ class TestCreate:
         if expected == 201:
             assert models["create"].calls[0][0] == (12, user_id, "Hi")
             assert models["incident"].calls[0][1] == {"lock": True}
+
+    def test_admin_at_another_branch_is_an_outsider(self, models, monkeypatch):
+        sign_in_as(monkeypatch, "facility_admin", user_id=1, branch_id=2)  # the ticket is at branch 1
+        assert call(handler, "POST", "/api/messages", body={"incidentId": 12, "message": "Hi"})[0] == 404
+        assert call(handler, "GET", "/api/messages", query={"incidentId": "12"})[0] == 404
+        assert models["create"].calls == []
 
     def test_closed_ticket_is_409(self, models, monkeypatch):
         sign_in_as(monkeypatch, "employee", user_id=4)

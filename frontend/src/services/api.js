@@ -147,7 +147,8 @@ export const buildings = {
 
 export const incidents = {
   create: (ticket) => request('POST', '/incidents', ticket),
-  // filters: { scope, status, priority, days, q, sort, order, page, limit } -> { items, total, page, limit, pages }
+  // filters: { scope, status, priority, category, days, buildingId, floor, q, sort, order, page, limit }
+  // -> { items, total, page, limit, pages }. floor only means something with a buildingId.
   list: (filters) => request('GET', '/incidents', null, filters),
   get: (id) => request('GET', `/incidents/${id}`),
   assign: (id, assigneeId) => request('PUT', `/incidents/${id}/assign`, { assigneeId }),
@@ -155,6 +156,7 @@ export const incidents = {
   updateStatus: (id, status, note) => request('PUT', `/incidents/${id}/status`, { status, note }),
   decideApproval: (id, decision, note) => request('PUT', `/incidents/${id}/approval`, { decision, note }),
   updatePriority: (id, priority) => request('PUT', `/incidents/${id}/priority`, { priority }),
+  updateCategory: (id, category) => request('PUT', `/incidents/${id}/category`, { category }),
   // location is { buildingId, floor, room } or null to clear it
   updateLocation: (id, location) => request('PUT', `/incidents/${id}/location`, { location }),
 }

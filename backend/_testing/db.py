@@ -238,8 +238,8 @@ def create_location(building_id, floor, room=None):
 
 def create_incident(reported_by, title=None, description="", priority=3, status="open",
                     assigned_to=None, location_id=None, created_days_ago=0,
-                    pending_status=None, pending_requested_by=None):
-    """Insert a ticket and return its id."""
+                    pending_status=None, pending_requested_by=None, branch_id=None, category="other"):
+    """Insert a ticket and return its id. branch_id defaults to the reporter's branch (else 1)."""
     import lib.database as database
 
     title = title or f"Ticket {next(_counter)}"
@@ -247,13 +247,15 @@ def create_incident(reported_by, title=None, description="", priority=3, status=
         """
         INSERT INTO incidents (title, description, priority, status, reported_by, assigned_to,
                                location_id, created_at, pending_status, pending_requested_by,
-                               pending_requested_at)
+                               pending_requested_at, branch_id, category)
         VALUES (%s, %s, %s, %s, %s, %s, %s, NOW() - make_interval(days => %s), %s, %s,
-                CASE WHEN %s::text IS NULL THEN NULL ELSE NOW() END)
+                CASE WHEN %s::text IS NULL THEN NULL ELSE NOW() END,
+                COALESCE(%s, (SELECT branch_id FROM users WHERE id = %s), 1), %s)
         RETURNING id
         """,
         (title, description, priority, status, reported_by, assigned_to, location_id,
-         created_days_ago, pending_status, pending_requested_by, pending_status),
+         created_days_ago, pending_status, pending_requested_by, pending_status,
+         branch_id, reported_by, category),
     )
     return row["id"]
 

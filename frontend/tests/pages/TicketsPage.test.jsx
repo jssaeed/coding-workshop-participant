@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { MemoryRouter } from 'react-router-dom'
 
 vi.mock('../../src/services/api', async () => (await import('../helpers')).mockApiModule())
 
@@ -10,7 +11,7 @@ import { DEFAULT_DAYS } from '../../src/components/charts/shared'
 import { admin, chooseOption, employee, engineer, openedOptions, pageOf, resetApi, rowContaining, ticket } from '../helpers'
 
 // What the page asks the server for before anyone touches a filter
-const DEFAULT_QUERY = { scope: 'mine', status: '', priority: '', days: DEFAULT_DAYS, q: '', sort: 'priority', order: 'asc', page: 1, limit: 25 }
+const DEFAULT_QUERY = { scope: 'mine', status: '', priority: '', category: '', days: DEFAULT_DAYS, buildingId: '', floor: '', q: '', sort: 'priority', order: 'asc', page: 1, limit: 25 }
 
 const tickets = [
   ticket({ id: 12 }),
@@ -18,9 +19,10 @@ const tickets = [
            pendingApproval: { status: 'blocked', note: '', requestedAt: '2026-09-22T15:00:00Z', requestedBy: null } }),
 ]
 
-function renderPage(user = employee) {
+// url: the address the page is opened at (filters can come from it)
+function renderPage(user = employee, url = '/tickets') {
   const onOpen = vi.fn()
-  render(<TicketsPage user={user} onOpen={onOpen} />)
+  render(<MemoryRouter initialEntries={[url]}><TicketsPage user={user} onOpen={onOpen} /></MemoryRouter>)
   return onOpen
 }
 
@@ -36,6 +38,7 @@ describe('the list', () => {
     const leak = rowContaining('Leaking pipe')
     expect(within(leak).getByText('Open')).toBeInTheDocument()
     expect(within(leak).getByText('P2')).toBeInTheDocument()
+    expect(within(leak).getByText('Plumbing')).toBeInTheDocument()
     expect(within(leak).getByText('HQ, floor 3, room 312')).toBeInTheDocument()
     expect(within(leak).getByText('Ana Lopez')).toBeInTheDocument()
 
@@ -57,10 +60,62 @@ describe('the list', () => {
     await waitFor(() => expect(api.incidents.list).toHaveBeenCalledTimes(1))
     await chooseOption(screen.getAllByRole('combobox')[1], 'In progress')
     await waitFor(() => expect(api.incidents.list).toHaveBeenLastCalledWith({ ...DEFAULT_QUERY, status: 'in_progress' }))
+    // a second status adds to the first: tickets in either are shown
+    await chooseOption(screen.getAllByRole('combobox')[1], 'Blocked')
+    await waitFor(() => expect(api.incidents.list).toHaveBeenLastCalledWith({ ...DEFAULT_QUERY, status: 'in_progress,blocked' }))
     await chooseOption(screen.getAllByRole('combobox')[2], 'P1')
-    await waitFor(() => expect(api.incidents.list).toHaveBeenLastCalledWith({ ...DEFAULT_QUERY, status: 'in_progress', priority: '1' }))
+    await waitFor(() => expect(api.incidents.list).toHaveBeenLastCalledWith({ ...DEFAULT_QUERY, status: 'in_progress,blocked', priority: '1' }))
     fireEvent.click(screen.getByRole('button', { name: /Refresh/ }))
-    await waitFor(() => expect(api.incidents.list).toHaveBeenCalledTimes(4))
+    await waitFor(() => expect(api.incidents.list).toHaveBeenCalledTimes(5))
+  })
+
+  it('narrows to a building and then one of its floors', async () => {
+    renderPage()
+    await waitFor(() => expect(api.incidents.list).toHaveBeenCalledTimes(1))
+    const [, , , , buildingBox, floorBox] = screen.getAllByRole('combobox') // show, status, priority, category, building, floor
+    expect(floorBox).toBeDisabled() // no building chosen yet, so no floors to offer
+    expect(await openedOptions(buildingBox)).toEqual(['Any building', 'HQ'])
+
+    await chooseOption(buildingBox, 'HQ')
+    await waitFor(() => expect(api.incidents.list).toHaveBeenLastCalledWith({ ...DEFAULT_QUERY, buildingId: 2 }))
+    await waitFor(() => expect(floorBox).toBeEnabled())
+    expect(await openedOptions(floorBox)).toEqual(['Any floor', '3', '2', '1', 'B1'])
+    await chooseOption(floorBox, 'B1')
+    await waitFor(() => expect(api.incidents.list).toHaveBeenLastCalledWith({ ...DEFAULT_QUERY, buildingId: 2, floor: -1 }))
+
+    // Back to any building: the floor no longer applies, and one request covers both
+    const calls = api.incidents.list.mock.calls.length
+    await chooseOption(buildingBox, 'Any building')
+    await waitFor(() => expect(api.incidents.list).toHaveBeenLastCalledWith(DEFAULT_QUERY))
+    expect(api.incidents.list).toHaveBeenCalledTimes(calls + 1)
+    expect(floorBox).toBeDisabled()
+  })
+
+  it('goes back to the default order when a column sort is cleared', async () => {
+    renderPage()
+    await waitFor(() => expect(api.incidents.list).toHaveBeenCalledTimes(1))
+    fireEvent.click(screen.getByText('Title')) // ascending
+    await waitFor(() => expect(api.incidents.list).toHaveBeenLastCalledWith({ ...DEFAULT_QUERY, sort: 'title', order: 'asc' }))
+    fireEvent.click(screen.getByText('Title')) // descending
+    await waitFor(() => expect(api.incidents.list).toHaveBeenLastCalledWith({ ...DEFAULT_QUERY, sort: 'title', order: 'desc' }))
+    fireEvent.click(screen.getByText('Title')) // cleared: most urgent first again
+    await waitFor(() => expect(api.incidents.list).toHaveBeenLastCalledWith(DEFAULT_QUERY))
+  })
+
+  it('clears the status filter back to every status', async () => {
+    renderPage(employee, '/tickets?status=open,blocked')
+    await waitFor(() => expect(api.incidents.list).toHaveBeenLastCalledWith({ ...DEFAULT_QUERY, status: 'open,blocked' }))
+    const statusBox = screen.getAllByRole('combobox')[1].closest('.ant-select')
+    fireEvent.click(statusBox.querySelector('.ant-select-clear')) // the "x" on the multi-select
+    await waitFor(() => expect(api.incidents.list).toHaveBeenLastCalledWith(DEFAULT_QUERY))
+  })
+
+  it('sorts by location on the server', async () => {
+    api.incidents.list.mockResolvedValue(pageOf(tickets))
+    renderPage()
+    await screen.findByText('Leaking pipe')
+    fireEvent.click(screen.getByText('Location'))
+    await waitFor(() => expect(api.incidents.list).toHaveBeenLastCalledWith({ ...DEFAULT_QUERY, sort: 'location', order: 'asc' }))
   })
 
   it('searches on the server once typing pauses', async () => {
@@ -102,6 +157,31 @@ describe('the list', () => {
     expect(await openedOptions(screen.getAllByRole('combobox')[0])).toEqual(expected)
   })
 
+  it.each([
+    [employee, 'mine', 'My tickets'],
+    [engineer, 'assigned', 'Assigned to me'],
+    [admin, 'all', 'All tickets'],
+  ])('starts each role on the scope it uses most', async (user, scope, shown) => {
+    renderPage(user)
+    await waitFor(() => expect(api.incidents.list).toHaveBeenCalledWith({ ...DEFAULT_QUERY, scope }))
+    expect(screen.getAllByRole('combobox')[0].closest('.ant-select')).toHaveTextContent(shown)
+  })
+
+  it('starts from the filters in the URL, as the Statistics page links to it', async () => {
+    renderPage(admin, '/tickets?scope=all&days=90&status=open,blocked&priority=2&category=hvac&buildingId=2&floor=-1&q=leak')
+    await waitFor(() => expect(api.incidents.list).toHaveBeenCalledWith({
+      ...DEFAULT_QUERY, scope: 'all', days: 90, status: 'open,blocked', priority: '2', category: 'hvac', buildingId: 2, floor: -1, q: 'leak',
+    }))
+    expect(screen.getByDisplayValue('leak')).toBeInTheDocument()
+    const selects = screen.getAllByRole('combobox').map((box) => box.closest('.ant-select').textContent)
+    expect(selects.slice(0, 7)).toEqual(['All tickets', 'OpenBlocked', 'P2', 'AC / heating', 'HQ', 'B1', 'Last 90 days'])
+  })
+
+  it('ignores a scope in the URL the user may not pick', async () => {
+    renderPage(employee, '/tickets?scope=all')
+    await waitFor(() => expect(api.incidents.list).toHaveBeenCalledWith(DEFAULT_QUERY))
+  })
+
   it('shows an empty message and a load error', async () => {
     renderPage()
     expect(await screen.findByText(`No tickets in the last ${DEFAULT_DAYS} days.`)).toBeInTheDocument()
@@ -138,13 +218,21 @@ describe('filing a ticket', () => {
     expect(api.incidents.create).not.toHaveBeenCalled()
   })
 
+  it('can be cancelled without filing anything', async () => {
+    await openForm()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    // antd starts the closing animation; jsdom never finishes one, so this is as closed as a dialog gets here
+    await waitFor(() => expect(screen.getByRole('dialog').className).toMatch(/-leave/))
+    expect(api.incidents.create).not.toHaveBeenCalled()
+  })
+
   it('files a ticket without a location and opens it', async () => {
     api.incidents.create.mockResolvedValue(ticket({ id: 40 }))
     const onOpen = await openForm()
     await userEvent.type(screen.getByPlaceholderText('Leaking pipe in the kitchen'), 'Cold office')
     fireEvent.click(screen.getByRole('button', { name: 'File ticket' }))
 
-    await waitFor(() => expect(api.incidents.create).toHaveBeenCalledWith({ title: 'Cold office', description: undefined, priority: 3 }))
+    await waitFor(() => expect(api.incidents.create).toHaveBeenCalledWith({ title: 'Cold office', description: undefined, priority: 3, category: 'other' }))
     expect(onOpen).toHaveBeenCalledWith(40)
   })
 
@@ -154,22 +242,23 @@ describe('filing a ticket', () => {
     const dialog = screen.getByRole('dialog')
     await userEvent.type(within(dialog).getByPlaceholderText('Leaking pipe in the kitchen'), 'Leak')
 
-    const [priorityBox, buildingBox, floorBox] = within(dialog).getAllByRole('combobox')
+    const [priorityBox, categoryBox, buildingBox, floorBox] = within(dialog).getAllByRole('combobox')
     expect(floorBox).toBeDisabled()
     await chooseOption(priorityBox, 'P1')
+    await chooseOption(categoryBox, 'AC / heating')
     await chooseOption(buildingBox, 'HQ')
     await waitFor(() => expect(floorBox).toBeEnabled()) // the floor list follows the building
     expect(await openedOptions(floorBox)).toEqual(['3', '2', '1', 'B1'])
     await chooseOption(floorBox, '3')
     // floor 3 has 10 rooms, so the room field becomes a list, written with the floor in front
-    await waitFor(() => expect(within(dialog).getAllByRole('combobox')).toHaveLength(4))
-    const roomBox = within(dialog).getAllByRole('combobox')[3]
+    await waitFor(() => expect(within(dialog).getAllByRole('combobox')).toHaveLength(5))
+    const roomBox = within(dialog).getAllByRole('combobox')[4]
     expect(await openedOptions(roomBox)).toEqual(['301', '302', '303', '304', '305', '306', '307', '308', '309', '310'])
     await chooseOption(roomBox, '307')
 
     fireEvent.click(screen.getByRole('button', { name: 'File ticket' }))
     await waitFor(() => expect(api.incidents.create).toHaveBeenCalledWith({
-      title: 'Leak', description: undefined, priority: 1, location: { buildingId: 2, floor: 3, room: 7 },
+      title: 'Leak', description: undefined, priority: 1, category: 'hvac', location: { buildingId: 2, floor: 3, room: 7 },
     }))
     expect(onOpen).toHaveBeenCalledWith(41)
   })
@@ -178,8 +267,8 @@ describe('filing a ticket', () => {
     await openForm()
     const dialog = screen.getByRole('dialog')
     await userEvent.type(within(dialog).getByPlaceholderText('Leaking pipe in the kitchen'), 'Leak')
-    await chooseOption(within(dialog).getAllByRole('combobox')[1], 'HQ')
-    await waitFor(() => expect(within(dialog).getAllByRole('combobox')[2]).toBeEnabled())
+    await chooseOption(within(dialog).getAllByRole('combobox')[2], 'HQ')
+    await waitFor(() => expect(within(dialog).getAllByRole('combobox')[3]).toBeEnabled())
     fireEvent.click(screen.getByRole('button', { name: 'File ticket' }))
     expect(await screen.findByText('Choose a floor')).toBeInTheDocument()
     expect(api.incidents.create).not.toHaveBeenCalled()
@@ -197,5 +286,23 @@ describe('filing a ticket', () => {
     api.buildings.list.mockResolvedValue([])
     await openForm()
     expect(screen.getByText('No buildings defined yet. An admin can add them on the Buildings page.')).toBeInTheDocument()
+  })
+})
+
+describe('the personal statistics on top', () => {
+  it('reload for another range', async () => {
+    renderPage()
+    await waitFor(() => expect(api.stats.mine).toHaveBeenCalledWith(DEFAULT_DAYS))
+    fireEvent.click(screen.getByText('Last 7 days'))
+    await waitFor(() => expect(api.stats.mine).toHaveBeenLastCalledWith(7))
+    expect(await screen.findByText('opened in the last 7 days')).toBeInTheDocument()
+  })
+
+  it('show their own load error without hiding the list', async () => {
+    api.stats.mine.mockRejectedValue(new Error('Access denied'))
+    api.incidents.list.mockResolvedValue(pageOf(tickets))
+    renderPage()
+    expect(await screen.findByRole('alert')).toHaveTextContent('Access denied')
+    expect(await screen.findByText('Leaking pipe')).toBeInTheDocument()
   })
 })

@@ -82,9 +82,6 @@ SCHEMA = [
     )
     """,
 
-    # The employee directory: one branch's accounts, newest first, by page.
-    "CREATE INDEX IF NOT EXISTS users_branch_created_idx ON users (branch_id, created_at DESC, id DESC)",
-
     # --- buildings -------------------------------------------------------
     # Defined by a facility admin for their own branch: a name, how many
     # floors above ground (1..floors) and how many below (B1..Bm). The
@@ -176,7 +173,10 @@ SCHEMA = [
 
     # --- incidents -------------------------------------------------------
     # A ticket. reported_by is who filed it, assigned_to is the engineer
-    # working on it (NULL until an admin assigns someone).
+    # working on it (NULL until an admin assigns someone). branch_id is the
+    # branch the ticket was filed at (the reporter's branch): facility
+    # admins only see and manage the tickets at their own branch, and it is
+    # stored on the ticket so it survives a deleted reporter or no location.
     # Both point at users with ON DELETE SET NULL: when an account is
     # deleted its tickets stay, and the API shows "Deleted user" instead.
     """
@@ -187,7 +187,12 @@ SCHEMA = [
         status      TEXT        NOT NULL DEFAULT 'open'
                                 CHECK (status IN ('open', 'assigned', 'in_progress', 'blocked', 'resolved', 'closed')),
         priority    SMALLINT    NOT NULL DEFAULT 3 CHECK (priority BETWEEN 1 AND 5),
+        -- What kind of problem it is (plumbing, electrical, ...). The list
+        -- is repeated in the incidents service (models/incident.py).
+        category    TEXT        NOT NULL DEFAULT 'other'
+                                CHECK (category IN ('plumbing', 'electrical', 'hvac', 'structural', 'doors_and_locks', 'elevators', 'furniture', 'appliances', 'safety', 'cleaning', 'other')),
         location_id BIGINT      REFERENCES locations (id) ON DELETE RESTRICT,
+        branch_id   BIGINT      NOT NULL REFERENCES branches (id) ON DELETE RESTRICT,
         reported_by BIGINT      REFERENCES users (id) ON DELETE SET NULL,
         assigned_to BIGINT      REFERENCES users (id) ON DELETE SET NULL,
         created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -206,9 +211,17 @@ SCHEMA = [
     "ALTER TABLE incidents ADD COLUMN IF NOT EXISTS pending_requested_by BIGINT REFERENCES users (id) ON DELETE SET NULL",
     "ALTER TABLE incidents ADD COLUMN IF NOT EXISTS pending_requested_at TIMESTAMPTZ",
     "ALTER TABLE incidents ADD COLUMN IF NOT EXISTS pending_note TEXT",
+    # Upgrade for incidents tables made before categories existed: every
+    # older ticket becomes 'other' (the DEFAULT fills the new column).
+    """
+    ALTER TABLE incidents
+    ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT 'other'
+        CHECK (category IN ('plumbing', 'electrical', 'hvac', 'structural', 'doors_and_locks', 'elevators', 'furniture', 'appliances', 'safety', 'cleaning', 'other'))
+    """,
     # Indexes make the ticket list filters fast.
     "CREATE INDEX IF NOT EXISTS incidents_status_idx      ON incidents (status)",
     "CREATE INDEX IF NOT EXISTS incidents_priority_idx    ON incidents (priority)",
+    "CREATE INDEX IF NOT EXISTS incidents_category_idx    ON incidents (category)",
     "CREATE INDEX IF NOT EXISTS incidents_reported_by_idx ON incidents (reported_by)",
     "CREATE INDEX IF NOT EXISTS incidents_assigned_to_idx ON incidents (assigned_to)",
     # The ticket list's default order (most urgent, then newest, then id as
@@ -302,9 +315,12 @@ def apply_schema():
             allow_deleting_users_with_history(cursor)
             add_assigned_status(cursor)
             add_branches_to_users(cursor)
+            add_users_directory_index(cursor)
+            add_branches_to_incidents(cursor)
             allow_basement_floors(cursor)
             add_db_admin_role(cursor)
             ensure_db_admin_account(cursor)
+            move_id_counters_past_existing_rows(cursor)
         connection.commit()
     except Exception:
         connection.rollback()
@@ -473,6 +489,50 @@ def add_branches_to_users(cursor):
     cursor.execute("ALTER TABLE users ALTER COLUMN branch_id SET NOT NULL")
 
 
+def add_users_directory_index(cursor):
+    """
+    The employee directory: one branch's accounts, newest first, by page.
+    Created here rather than in SCHEMA because the column has to exist
+    first (see add_branches_to_users). Safe to run every time.
+    """
+    cursor.execute("CREATE INDEX IF NOT EXISTS users_branch_created_idx ON users (branch_id, created_at DESC, id DESC)")
+
+
+def add_branches_to_incidents(cursor):
+    """
+    Give an existing incidents table its branch_id column. A ticket made
+    before this belongs to its building's branch, else its reporter's
+    branch, else Princeton-Plainsboro. The index is created here rather
+    than in SCHEMA because the column has to exist first.
+    """
+    cursor.execute(
+        """
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'incidents' AND column_name = 'branch_id'
+        """
+    )
+    if cursor.fetchone() is None:
+        logger.info("Adding branch_id to incidents, from each ticket's building or reporter")
+        cursor.execute(
+            "ALTER TABLE incidents ADD COLUMN branch_id BIGINT REFERENCES branches (id) ON DELETE RESTRICT"
+        )
+        cursor.execute(
+            """
+            UPDATE incidents i
+            SET branch_id = COALESCE(
+                (SELECT b.branch_id FROM locations l JOIN buildings b ON b.id = l.building_id WHERE l.id = i.location_id),
+                (SELECT u.branch_id FROM users u WHERE u.id = i.reported_by),
+                (SELECT id FROM branches WHERE name = 'Princeton-Plainsboro')
+            )
+            WHERE branch_id IS NULL
+            """
+        )
+        cursor.execute("ALTER TABLE incidents ALTER COLUMN branch_id SET NOT NULL")
+
+    cursor.execute("CREATE INDEX IF NOT EXISTS incidents_branch_id_idx ON incidents (branch_id)")
+
+
 def allow_basement_floors(cursor):
     """Let locations.floor be negative (basements) on an existing table."""
     cursor.execute(
@@ -523,6 +583,40 @@ DB_ADMIN_EMAIL = "admin@admin.com"
 DB_ADMIN_PASSWORD = "admin123"
 DB_ADMIN_NAME = "admin"
 DB_ADMIN_BRANCH = "Princeton-Plainsboro"
+
+
+# Tables whose id is handed out by PostgreSQL (GENERATED ALWAYS AS IDENTITY).
+ID_TABLES = ["branches", "users", "buildings", "locations", "incidents", "messages", "refresh_tokens"]
+
+
+def move_id_counters_past_existing_rows(cursor):
+    """
+    Make sure the next id PostgreSQL hands out is above every id a table
+    already holds.
+
+    Normally that is automatic. But seed.sql inserts rows with fixed ids
+    (OVERRIDING SYSTEM VALUE), which does not move the counter, so the next
+    ordinary INSERT would be given an id that is already taken and fail with
+    "duplicate key". The same happens after restoring a dump. This runs on
+    every migration and after every seed load, and does nothing when the
+    counters are already ahead.
+    """
+    for table in ID_TABLES:
+        cursor.execute(f"SELECT COALESCE(MAX(id), 0) AS max_id FROM {table}")
+        max_id = cursor.fetchone()["max_id"]
+
+        cursor.execute("SELECT pg_get_serial_sequence(%s, 'id') AS counter", (table,))
+        counter = cursor.fetchone()["counter"]  # e.g. "public.users_id_seq"
+
+        # is_called = False means last_value is the NEXT id; True means the
+        # next id is last_value + 1.
+        cursor.execute(f"SELECT last_value, is_called FROM {counter}")
+        row = cursor.fetchone()
+        next_id = row["last_value"] + 1 if row["is_called"] else row["last_value"]
+
+        if max_id >= next_id:
+            logger.info("Moving %s ids past %s", table, max_id)
+            cursor.execute("SELECT setval(%s, %s, false)", (counter, max_id + 1))
 
 
 def ensure_db_admin_account(cursor):
@@ -604,6 +698,8 @@ def load_seed():
         with connection.cursor() as cursor:
             cursor.execute(f"TRUNCATE {', '.join(SEED_TABLES)} RESTART IDENTITY CASCADE")
             cursor.execute(sql)
+            # The file sets ids by hand; the counters must move past them.
+            move_id_counters_past_existing_rows(cursor)
             counts = {}
             for table in SEED_TABLES:
                 cursor.execute(f"SELECT COUNT(*) AS n FROM {table}")

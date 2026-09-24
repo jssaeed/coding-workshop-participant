@@ -8,11 +8,12 @@ vi.mock('../src/services/api', async () => (await import('./helpers')).mockApiMo
 
 import * as api from '../src/services/api'
 import App from '../src/App'
-import { admin, employee, engineer, pageOf, resetApi } from './helpers'
+import { admin, employee, engineer, pageOf, resetApi, ticket } from './helpers'
 
 // main.jsx wraps App in a HashRouter; tests use an in-memory one
-function renderApp() {
-  return render(<MemoryRouter><App /></MemoryRouter>)
+// history: the addresses visited so far, the last one being the current page
+function renderApp(history = ['/']) {
+  return render(<MemoryRouter initialEntries={history} initialIndex={history.length - 1}><App /></MemoryRouter>)
 }
 
 function signedInAs(user) {
@@ -52,6 +53,21 @@ describe('App', () => {
     expect(api.saveSession).toHaveBeenCalledWith(employee, 'tok', 'ref')
   })
 
+  it.each([
+    [employee, 'Tickets'],
+    [engineer, 'Tickets'],
+    [admin, 'Statistics'],
+  ])('sends each role to the page they use most after signing in', async (user, heading) => {
+    api.users.login.mockResolvedValue({ user, token: 'tok', refreshToken: 'ref' })
+    api.users.me.mockResolvedValue(user) // the role poll agrees with the login
+    renderApp()
+    fireEvent.change(screen.getByPlaceholderText('you@acme.inc'), { target: { value: user.email } })
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'hunter22!' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
+
+    expect(await screen.findByRole('heading', { name: heading })).toBeInTheDocument()
+  })
+
   it('navigates between pages from the header', async () => {
     signedInAs(employee)
     renderApp()
@@ -71,6 +87,34 @@ describe('App', () => {
     expect(api.incidents.list).toHaveBeenCalledWith({ scope: 'pending', limit: 1 }) // only the total is needed
     fireEvent.click(screen.getByText('Employee directory'))
     expect(await screen.findByRole('heading', { name: /Employee directory/ })).toBeInTheDocument()
+  })
+
+  it('drops the approvals count as soon as a request is decided', async () => {
+    signedInAs(admin)
+    // The header asks for the pending total; the Approvals page asks for the pending tickets
+    let waiting = 2
+    const pending = ticket({ pendingApproval: { status: 'resolved', note: '', requestedAt: '2026-09-22T15:00:00Z', requestedBy: null } })
+    api.incidents.list.mockImplementation((filters) => Promise.resolve(
+      filters.limit === 1 ? pageOf([{ id: 1 }], waiting) : pageOf(waiting ? [pending] : [], waiting),
+    ))
+    api.incidents.decideApproval.mockImplementation(() => { waiting -= 1; return Promise.resolve(ticket({ status: 'resolved' })) })
+    renderApp()
+    expect(await screen.findByText('Approvals (2)')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByText('Approvals (2)'))
+    fireEvent.click(await screen.findByRole('button', { name: /Approve/ }))
+    // no poll has fired: the count was refreshed by the decision itself
+    expect(await screen.findByText('Approvals (1)')).toBeInTheDocument()
+  })
+
+  it('opens a ticket from its address and goes back to where it came from', async () => {
+    signedInAs(employee)
+    api.incidents.get.mockResolvedValue(ticket({ id: 12 }))
+    renderApp(['/tickets', '/tickets/12'])
+    expect(await screen.findByText('#12 Leaking pipe')).toBeInTheDocument()
+    expect(api.incidents.get).toHaveBeenCalledWith(12)
+    fireEvent.click(screen.getByRole('button', { name: /Back to tickets/ }))
+    expect(await screen.findByRole('heading', { name: 'Tickets' })).toBeInTheDocument()
   })
 
   it('signs out', async () => {

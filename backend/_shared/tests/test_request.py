@@ -4,7 +4,7 @@ import pytest
 
 from _testing.events import event
 from lib.request import (choice_param, headers, http_method, int_param, json_body, page_params, path_id,
-                         path_segments, query_params, text_param)
+                         path_segments, positive_int_param, query_params, text_param)
 from lib.responses import HttpError
 
 
@@ -98,6 +98,17 @@ class TestQueryParameters:
         with pytest.raises(HttpError) as raised:
             int_param({"page": value}, "page", 1, 10)
         assert (raised.value.status_code, raised.value.message) == (400, "'page' must be between 1 and 10")
+
+    def test_positive_int_param_reads_an_id_or_nothing(self):
+        assert positive_int_param({"buildingId": "2"}, "buildingId") == 2
+        assert positive_int_param({"buildingId": ""}, "buildingId") is None
+        assert positive_int_param({}, "buildingId") is None
+
+    @pytest.mark.parametrize("value", ["0", "-1", "abc", "1.5", " 2"])
+    def test_positive_int_param_rejects_anything_else(self, value):
+        with pytest.raises(HttpError) as raised:
+            positive_int_param({"buildingId": value}, "buildingId")
+        assert (raised.value.status_code, raised.value.message) == (400, "'buildingId' must be a positive whole number")
 
     def test_page_params_defaults_and_offset(self):
         assert page_params({}) == (1, 25, 0)

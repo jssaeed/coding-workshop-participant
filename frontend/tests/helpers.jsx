@@ -38,6 +38,7 @@ export function ticket(overrides = {}) {
     description: 'Under the sink',
     status: 'open',
     priority: 2,
+    category: 'plumbing',
     location: { id: 1, building: { id: 2, name: 'HQ' }, floor: 3, room: 12, roomLabel: '312' },
     reportedBy: { id: employee.id, name: employee.name, email: employee.email },
     assignedTo: null,
@@ -76,6 +77,17 @@ export const zeroStats = {
   byStatus: { open: 0, assigned: 0, in_progress: 0, blocked: 0, resolved: 0, closed: 0 },
 }
 
+// GET /api/stats/overview adds the priority and category splits and the resolution time
+export const zeroOverview = {
+  ...zeroStats,
+  byPriority: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 },
+  byCategory: {
+    plumbing: 0, electrical: 0, hvac: 0, structural: 0, doors_and_locks: 0, elevators: 0,
+    furniture: 0, appliances: 0, safety: 0, cleaning: 0, other: 0,
+  },
+  resolution: { averageSeconds: null, resolvedCount: 0 },
+}
+
 // The shape of src/services/api.js, every function a vi.fn()
 export function mockApiModule() {
   const fn = () => vi.fn()
@@ -87,7 +99,7 @@ export function mockApiModule() {
     clearSession: fn(),
     users: { branches: fn(), signup: fn(), login: fn(), me: fn(), logout: fn(), list: fn(), updateRole: fn(), remove: fn() },
     buildings: { list: fn(), create: fn(), update: fn(), remove: fn() },
-    incidents: { create: fn(), list: fn(), get: fn(), assign: fn(), updateStatus: fn(), decideApproval: fn(), updatePriority: fn(), updateLocation: fn() },
+    incidents: { create: fn(), list: fn(), get: fn(), assign: fn(), updateStatus: fn(), decideApproval: fn(), updatePriority: fn(), updateCategory: fn(), updateLocation: fn() },
     stats: { overview: fn(), locations: fn(), mine: fn(), engineers: fn() },
     messages: { list: fn(), create: fn() },
     inbox: { list: fn(), count: fn(), markRead: fn(), markAllRead: fn() },
@@ -111,7 +123,7 @@ export function resetApi(api) {
   api.buildings.list.mockResolvedValue([building])
   api.incidents.list.mockResolvedValue(pageOf([]))
   api.stats.mine.mockResolvedValue({ reported: zeroStats, assigned: null })
-  api.stats.overview.mockResolvedValue(zeroStats)
+  api.stats.overview.mockResolvedValue(zeroOverview)
   api.stats.locations.mockResolvedValue({ level: 'building', items: [] })
   api.stats.engineers.mockResolvedValue([])
   api.messages.list.mockResolvedValue(threadOf([]))

@@ -84,6 +84,20 @@ def int_param(params, name, minimum, maximum, default=None):
     return int(value)
 
 
+def positive_int_param(params, name):
+    """
+    An optional ?name=N query parameter that must be a positive whole number
+    (an id, say), or None when it is absent or empty. Anything else is a 400
+    that names the parameter.
+    """
+    value = params.get(name)
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str) or not value.isdigit() or int(value) < 1:
+        raise HttpError(400, f"'{name}' must be a positive whole number")
+    return int(value)
+
+
 def page_params(params, default_limit=DEFAULT_PAGE_SIZE, max_limit=MAX_PAGE_SIZE):
     """
     Read ?page= and ?limit= from the query string.

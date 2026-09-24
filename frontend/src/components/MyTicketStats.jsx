@@ -26,10 +26,12 @@ export default function MyTicketStats({ user }) {
         <Segmented value={days} onChange={setDays} options={RANGES} />
       </div>
       <Alert error={error} />
+      {/* Side by side, the two cards stretch to the same height even though
+          the assigned ring's legend has one row fewer (no "Open") */}
       {mine && (
         <Row gutter={[16, 16]}>
           <Col xs={24} lg={showAssigned ? 12 : 24}>
-            <Card title="My Tickets" size="small">
+            <Card title="My Tickets" size="small" className="full-height-card">
               <Row gutter={[24, 16]} align="middle">
                 <Col xs={24} md={8}>
                   <Tile value={mine.reported.total} caption={`opened in the last ${days} days`} />
@@ -42,7 +44,7 @@ export default function MyTicketStats({ user }) {
           </Col>
           {showAssigned && (
             <Col xs={24} lg={12}>
-              <Card title="Assigned Tickets" size="small">
+              <Card title="Assigned Tickets" size="small" className="full-height-card">
                 <Row gutter={[24, 16]} align="middle">
                   <Col xs={24} md={8}>
                     <Tile value={mine.assigned.total} caption={`opened in the last ${days} days`} />

@@ -200,6 +200,7 @@ export default function UsersPage({ user }) {
           setPageSize(pagination.pageSize)
         }}
         pagination={{
+          position: ['topRight'], // the page picker sits above the table
           current: page,
           pageSize,
           total,

@@ -10,6 +10,39 @@ export const BRANCH_ROLES = ['employee', 'engineer', 'facility_admin']
 // Most senior first, for sorting the employee directory by role
 export const ROLE_ORDER = { db_admin: 0, facility_admin: 1, engineer: 2, employee: 3 }
 export const PRIORITIES = [1, 2, 3, 4, 5]
+// What kind of problem a ticket is about, in the backend's order (models/incident.py)
+export const CATEGORIES = [
+  'plumbing', 'electrical', 'hvac', 'structural', 'doors_and_locks', 'elevators',
+  'furniture', 'appliances', 'safety', 'cleaning', 'other',
+]
+export const DEFAULT_CATEGORY = 'other'
+// Category names that label() would get wrong
+const CATEGORY_NAMES = { hvac: 'AC / heating', doors_and_locks: 'Doors & locks' }
+
+// Chart colours for the engineers ring. Engineers are not a fixed list, so
+// each one takes the next hue in this order (the order the backend lists
+// them: most tickets first, then by name). Every neighbouring pair in this
+// order was checked for colour-blind safety; past eight the hues repeat.
+export const ENGINEER_CHART_COLORS = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#4a3aa7', '#e34948']
+
+// Chart colours for each category, one fixed hue per category so a category
+// always has the same colour wherever it is drawn. The ring draws them in
+// CATEGORIES order, and every neighbouring pair in that order (including
+// "other" back round to "plumbing") was checked for colour-blind safety
+// and for plain-sight difference.
+export const CATEGORY_CHART_COLORS = {
+  plumbing: '#8f6bd9',
+  electrical: '#c65a2c',
+  hvac: '#4a3aa7',
+  structural: '#d4487f',
+  doors_and_locks: '#2a78d6',
+  elevators: '#e34948',
+  furniture: '#3aa9e0',
+  appliances: '#eb6834',
+  safety: '#5b8def',
+  cleaning: '#008300',
+  other: '#e87ba4',
+}
 // Statuses an engineer can only request; a facility admin approves them
 export const APPROVAL_STATUSES = ['blocked', 'resolved']
 
@@ -42,12 +75,28 @@ export const PRIORITY_COLORS = {
   5: 'default',
 }
 
+// Chart colours for each priority: warm for urgent, cool for not. Taken from
+// the same colour-blind-checked set as the status colours, in an order
+// where neighbouring slices (including 5 next to 1 on a ring) stay apart.
+export const PRIORITY_CHART_COLORS = {
+  1: '#e34948',
+  2: '#eda100',
+  3: '#1baf7a',
+  4: '#2a78d6',
+  5: '#4a3aa7',
+}
+
 // "in_progress" -> "In progress", "facility_admin" -> "Facility admin"
 export function label(value) {
   if (!value) return ''
   if (value === 'db_admin') return 'DB admin'
   const words = value.replaceAll('_', ' ')
   return words.charAt(0).toUpperCase() + words.slice(1)
+}
+
+// "plumbing" -> "Plumbing", "hvac" -> "AC / heating"
+export function categoryLabel(category) {
+  return CATEGORY_NAMES[category] || label(category)
 }
 
 // "Ana Lopez" -> "A", used for the avatar in the header
@@ -145,4 +194,35 @@ export function isDbAdmin(user) {
 // db admin (every branch)
 export function canManageUsers(user) {
   return isAdmin(user) || isDbAdmin(user)
+}
+
+// Where each role lands after signing in: employees on the tickets they
+// reported, engineers on the tickets they work through, facility admins on
+// the statistics for their branch. Anyone else (the db admin) goes home.
+export function landingPageFor(user) {
+  if (user.role === 'employee' || user.role === 'engineer') return '/tickets'
+  if (isAdmin(user)) return '/stats'
+  return '/'
+}
+
+// The Tickets page address for a set of filters, e.g. {scope: 'all',
+// status: 'open'} -> "/tickets?scope=all&status=open". The Tickets page reads
+// them back from the URL, so a statistic can link to the tickets behind it.
+// Empty values are left out.
+export function ticketListUrl(filters) {
+  const params = new URLSearchParams()
+  for (const [name, value] of Object.entries(filters)) {
+    if (value !== '' && value !== undefined && value !== null) params.set(name, value)
+  }
+  const query = params.toString()
+  return query ? `/tickets?${query}` : '/tickets'
+}
+
+// Which "Show" option the Tickets page starts on: employees see the tickets
+// they reported, engineers the ones assigned to them, facility admins all of
+// their branch's tickets. The options themselves are listed on TicketsPage.
+export function defaultTicketScopeFor(user) {
+  if (user.role === 'engineer') return 'assigned'
+  if (isAdmin(user)) return 'all'
+  return 'mine'
 }

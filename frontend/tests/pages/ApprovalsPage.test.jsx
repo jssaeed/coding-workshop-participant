@@ -20,13 +20,18 @@ const blocked = ticket({
   pendingApproval: { status: 'blocked', note: '', requestedAt: '2026-09-22T15:10:00Z', requestedBy: null },
 })
 
+const onDecided = vi.fn() // the app refreshes the header count with this
+
 function renderPage() {
   const onOpen = vi.fn()
-  render(<ApprovalsPage onOpen={onOpen} />)
+  render(<ApprovalsPage onOpen={onOpen} onDecided={onDecided} />)
   return onOpen
 }
 
-beforeEach(() => resetApi(api))
+beforeEach(() => {
+  resetApi(api)
+  onDecided.mockClear()
+})
 
 describe('ApprovalsPage', () => {
   it('lists every waiting request with its reason and thread', async () => {
@@ -67,6 +72,7 @@ describe('ApprovalsPage', () => {
     await waitFor(() => expect(api.incidents.decideApproval).toHaveBeenCalledWith(12, 'approve', 'Thanks'))
     expect(await screen.findByRole('alert')).toHaveTextContent('#12: approved.')
     expect(await screen.findByText('Nothing is waiting for approval.')).toBeInTheDocument()
+    expect(onDecided).toHaveBeenCalledTimes(1) // so the header count drops at once
   })
 
   it('rejects without a note', async () => {

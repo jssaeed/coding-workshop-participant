@@ -18,6 +18,7 @@ def people(db):
         "engineer": db.create_user("engineer"),
         "employee": db.create_user("employee"),
         "outsider": db.create_user("employee"),
+        "miami_admin": db.create_user("facility_admin", branch_id=2),  # the ticket is at branch 1
     }
 
 
@@ -95,7 +96,7 @@ class TestMarkingRead:
         assert db.count("ticket_reads", "user_id <> %s", (people["employee"]["id"],)) == 0
 
     def test_who_may_mark_a_ticket_read(self, api, db, people, ticket):
-        for who, expected in [("employee", 200), ("engineer", 200), ("admin", 200), ("outsider", 404)]:
+        for who, expected in [("employee", 200), ("engineer", 200), ("admin", 200), ("outsider", 404), ("miami_admin", 404)]:
             assert api(handler, "PUT", f"/api/inbox/{ticket}/read", user=people[who])[0] == expected, who
         assert api(handler, "PUT", "/api/inbox/999/read", user=people["admin"])[0] == 404
         assert db.count("ticket_reads", "user_id = %s", (people["outsider"]["id"],)) == 0

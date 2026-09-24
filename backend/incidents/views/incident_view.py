@@ -61,7 +61,9 @@ def serialize(row):
         "description": row["description"],
         "status": row["status"],
         "priority": row["priority"],
+        "category": row["category"],  # plumbing, electrical, hvac, ... (see models/incident.py)
         "location": location,
+        "branchId": row["branch_id"],  # the branch the ticket was filed at
         "reportedBy": reported_by,
         "assignedTo": assigned_to,
         "createdAt": row["created_at"],

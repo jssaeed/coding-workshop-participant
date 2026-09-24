@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Button, Form, Input, InputNumber, Modal, Select, Space, Table, Tag, Typography } from 'antd'
 import { PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
 import { buildings, incidents } from '../services/api'
 import {
-  PRIORITIES, PRIORITY_COLORS, STATUSES, STATUS_COLORS,
-  floorOptions, formatDate, formatLocation, isAdmin, isStaff, label, personName, range, roomLabel, roomsOnFloor,
+  CATEGORIES, DEFAULT_CATEGORY, PRIORITIES, PRIORITY_COLORS, STATUSES, STATUS_COLORS,
+  categoryLabel, defaultTicketScopeFor, floorOptions, formatDate, formatLocation, isAdmin, isStaff, label, personName, range, roomLabel, roomsOnFloor,
 } from '../services/format'
 import { DEFAULT_DAYS, RANGES } from '../components/charts/shared'
 import useDebounce from '../hooks/useDebounce'
@@ -20,16 +21,33 @@ import MyTicketStats from '../components/MyTicketStats'
 const PAGE_SIZES = [10, 25, 50, 100]
 const DEFAULT_PAGE_SIZE = 25
 // Table column key -> the API's ?sort= value
-const SORT_KEYS = { id: 'id', title: 'title', priority: 'priority', createdAt: 'created' }
+const SORT_KEYS = { id: 'id', title: 'title', priority: 'priority', location: 'location', createdAt: 'created' }
 const DEFAULT_SORTING = { sort: 'priority', order: 'asc' } // most urgent first, then newest
 
 export default function TicketsPage({ user, onOpen }) {
-  // Filters
-  const [scope, setScope] = useState('mine')
-  const [status, setStatus] = useState('')
-  const [priority, setPriority] = useState('')
-  const [days, setDays] = useState(DEFAULT_DAYS) // only tickets created in the last N days
-  const [search, setSearch] = useState('') // matched against id, title, description, people, building
+  // Which "Show" options this user gets
+  const scopeOptions = [{ value: 'mine', label: 'My tickets' }]
+  if (isStaff(user)) scopeOptions.push({ value: 'assigned', label: 'Assigned to me' })
+  if (isAdmin(user)) {
+    scopeOptions.push({ value: 'unassigned', label: 'Unassigned' }, { value: 'pending', label: 'Awaiting approval' }, { value: 'all', label: 'All tickets' })
+  }
+
+  // Filters. The Statistics page links here with filters in the URL
+  // (/tickets?scope=all&status=open), so each one starts from the URL when
+  // it is given there and from its default otherwise.
+  const [params] = useSearchParams()
+  const urlScope = params.get('scope')
+  const [scope, setScope] = useState(
+    scopeOptions.some((option) => option.value === urlScope) ? urlScope : defaultTicketScopeFor(user), // 'mine', 'assigned' or 'all' by role
+  )
+  // Several statuses may be chosen; a ticket in any of them is shown
+  const [statuses, setStatuses] = useState(params.get('status') ? params.get('status').split(',') : [])
+  const [priority, setPriority] = useState(params.get('priority') || '')
+  const [category, setCategory] = useState(params.get('category') || '') // plumbing, electrical, ... ('' = any)
+  const [days, setDays] = useState(Number(params.get('days')) || DEFAULT_DAYS) // only tickets created in the last N days
+  const [buildingId, setBuildingId] = useState(Number(params.get('buildingId')) || '') // only tickets in this building ('' = any)
+  const [floor, setFloor] = useState(params.has('floor') ? Number(params.get('floor')) : '') // ...and on this floor of it ('' = any)
+  const [search, setSearch] = useState(params.get('q') || '') // matched against id, title, description, people, building
   const query = useDebounce(search.trim()) // sent once typing pauses
 
   // Which page, how big, and in what order
@@ -67,7 +85,7 @@ export default function TicketsPage({ user, onOpen }) {
   // Load the page whenever a filter, the order, the page or Refresh changes.
   // A changed filter or search starts again from page 1 (one request, not
   // one for the old page and one for the first).
-  const filterKey = JSON.stringify([scope, status, priority, days, query])
+  const filterKey = JSON.stringify([scope, statuses, priority, category, days, buildingId, floor, query])
   const lastFilterKey = useRef(filterKey)
   useEffect(() => {
     if (lastFilterKey.current !== filterKey) {
@@ -83,7 +101,7 @@ export default function TicketsPage({ user, onOpen }) {
       setError('')
       try {
         const data = await incidents.list({
-          scope, status, priority, days, q: query, sort: sorting.sort, order: sorting.order, page, limit: pageSize,
+          scope, status: statuses.join(','), priority, category, days, buildingId, floor, q: query, sort: sorting.sort, order: sorting.order, page, limit: pageSize,
         })
         setTickets(data.items)
         setTotal(data.total)
@@ -94,7 +112,7 @@ export default function TicketsPage({ user, onOpen }) {
       }
     }
     load()
-  }, [filterKey, scope, status, priority, days, query, sorting, page, pageSize, refreshCount])
+  }, [filterKey, scope, statuses, priority, category, days, buildingId, floor, query, sorting, page, pageSize, refreshCount])
 
   // The table tells us about a page turn, a page size or a column sort
   function handleTableChange(pagination, _filters, sorter) {
@@ -117,7 +135,7 @@ export default function TicketsPage({ user, onOpen }) {
     setFormError('')
     setSaving(true)
     try {
-      const ticket = { title: values.title, description: values.description, priority: values.priority }
+      const ticket = { title: values.title, description: values.description, priority: values.priority, category: values.category }
       if (values.buildingId) {
         ticket.location = { buildingId: values.buildingId, floor: values.floor, room: values.room ?? undefined }
       }
@@ -132,11 +150,12 @@ export default function TicketsPage({ user, onOpen }) {
     }
   }
 
-  // Which "Show" options this user gets
-  const scopeOptions = [{ value: 'mine', label: 'My tickets' }]
-  if (isStaff(user)) scopeOptions.push({ value: 'assigned', label: 'Assigned to me' })
-  if (isAdmin(user)) {
-    scopeOptions.push({ value: 'unassigned', label: 'Unassigned' }, { value: 'pending', label: 'Awaiting approval' }, { value: 'all', label: 'All tickets' })
+  // The building picked in the filters, so the floor filter can list its floors.
+  // Picking another building drops the floor: its floors are different.
+  const filterBuilding = buildingList.find((b) => b.id === buildingId)
+  function handleBuildingFilter(value) {
+    setBuildingId(value)
+    setFloor('')
   }
 
   const columns = [
@@ -162,7 +181,8 @@ export default function TicketsPage({ user, onOpen }) {
       sortOrder: sortOrderFor('priority'),
       render: (value) => <Tag color={PRIORITY_COLORS[value]}>P{value}</Tag>,
     },
-    { title: 'Location', key: 'location', dataIndex: 'location', render: formatLocation, responsive: ['md'] },
+    { title: 'Category', key: 'category', dataIndex: 'category', render: categoryLabel, responsive: ['md'] },
+    { title: 'Location', key: 'location', dataIndex: 'location', render: formatLocation, responsive: ['md'], sorter: true, sortOrder: sortOrderFor('location') },
     { title: 'Reported by', key: 'reportedBy', dataIndex: 'reportedBy', render: personName, responsive: ['lg'] },
     { title: 'Assigned to', key: 'assignedTo', dataIndex: ['assignedTo', 'name'], render: (v) => v || '—', responsive: ['lg'] },
     { title: 'Created', key: 'createdAt', dataIndex: 'createdAt', render: formatDate, responsive: ['md'], sorter: true, sortOrder: sortOrderFor('createdAt') },
@@ -171,7 +191,11 @@ export default function TicketsPage({ user, onOpen }) {
   return (
     <div>
       <div className="page-title">
-        <Typography.Title level={2} style={{ margin: 0 }}>Tickets</Typography.Title>
+        <Typography.Title level={2} style={{ margin: 0 }}>
+          Tickets
+          {/* An admin's queue is their branch's queue, so say which one */}
+          {isAdmin(user) && user.branch && <span className="muted" style={{ fontSize: 16, fontWeight: 400 }}> · {user.branch.name}</span>}
+        </Typography.Title>
         <Button type="primary" icon={<PlusOutlined />} onClick={() => setShowForm(true)}>
           New ticket
         </Button>
@@ -182,10 +206,14 @@ export default function TicketsPage({ user, onOpen }) {
       <Space wrap style={{ marginBottom: 16 }}>
         <Select value={scope} onChange={setScope} options={scopeOptions} style={{ width: 160 }} />
         <Select
-          value={status}
-          onChange={setStatus}
-          style={{ width: 150 }}
-          options={[{ value: '', label: 'Any status' }, ...STATUSES.map((s) => ({ value: s, label: label(s) }))]}
+          mode="multiple"
+          allowClear
+          placeholder="Any status"
+          maxTagCount={2}
+          value={statuses}
+          onChange={setStatuses}
+          style={{ minWidth: 150, maxWidth: 320 }}
+          options={STATUSES.map((s) => ({ value: s, label: label(s) }))}
         />
         <Select
           value={priority}
@@ -194,10 +222,29 @@ export default function TicketsPage({ user, onOpen }) {
           options={[{ value: '', label: 'Any priority' }, ...PRIORITIES.map((p) => ({ value: String(p), label: `P${p}` }))]}
         />
         <Select
+          value={category}
+          onChange={setCategory}
+          style={{ width: 150 }}
+          options={[{ value: '', label: 'Any category' }, ...CATEGORIES.map((c) => ({ value: c, label: categoryLabel(c) }))]}
+        />
+        <Select
+          value={buildingId}
+          onChange={handleBuildingFilter}
+          style={{ width: 160 }}
+          options={[{ value: '', label: 'Any building' }, ...buildingList.map((b) => ({ value: b.id, label: b.name }))]}
+        />
+        <Select
+          value={floor}
+          onChange={setFloor}
+          disabled={!filterBuilding}
+          style={{ width: 110 }}
+          options={[{ value: '', label: 'Any floor' }, ...floorOptions(filterBuilding)]}
+        />
+        <Select
           value={days}
           onChange={setDays}
           style={{ width: 140 }}
-          options={RANGES.filter((r) => r.value <= 30)}
+          options={RANGES} // the same ranges as the Statistics page, so its links carry over
         />
         <Input
           allowClear
@@ -221,6 +268,7 @@ export default function TicketsPage({ user, onOpen }) {
         loading={loading}
         onChange={handleTableChange}
         pagination={{
+          position: ['topRight'], // the page picker sits above the table
           current: page,
           pageSize,
           total,
@@ -243,7 +291,7 @@ export default function TicketsPage({ user, onOpen }) {
         confirmLoading={saving}
         destroyOnHidden
       >
-        <Form form={form} layout="vertical" onFinish={handleCreate} initialValues={{ priority: 3 }}>
+        <Form form={form} layout="vertical" onFinish={handleCreate} initialValues={{ priority: 3, category: DEFAULT_CATEGORY }}>
           <Form.Item name="title" label="Title" rules={[{ required: true, message: 'Give the ticket a title' }]}>
             <Input maxLength={255} placeholder="Leaking pipe in the kitchen" />
           </Form.Item>
@@ -252,6 +300,9 @@ export default function TicketsPage({ user, onOpen }) {
           </Form.Item>
           <Form.Item name="priority" label="Priority (1 = most urgent)">
             <Select options={PRIORITIES.map((p) => ({ value: p, label: `P${p}` }))} />
+          </Form.Item>
+          <Form.Item name="category" label="Category">
+            <Select options={CATEGORIES.map((c) => ({ value: c, label: categoryLabel(c) }))} />
           </Form.Item>
 
           <Space align="start" wrap>

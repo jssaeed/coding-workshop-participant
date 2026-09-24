@@ -2,7 +2,7 @@ import { fireEvent, render, screen, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import BarChart from '../../src/components/charts/BarChart'
 import Donut from '../../src/components/charts/Donut'
-import { Tile, statusItems } from '../../src/components/charts/shared'
+import { Tile, categoryItems, engineerItems, priorityItems, statusItems } from '../../src/components/charts/shared'
 
 const items = [
   { key: 'open', label: 'Open', value: 7, color: '#2a78d6' },
@@ -16,6 +16,30 @@ describe('shared', () => {
     expect(result.map((i) => i.key)).toEqual(['open', 'assigned', 'in_progress', 'blocked', 'resolved', 'closed'])
     expect(result[2]).toEqual({ key: 'in_progress', label: 'In progress', value: 1, color: '#eda100' })
     expect(statusItems({ open: 1, assigned: 2 }, ['open']).map((i) => i.key)).not.toContain('open')
+  })
+
+  it('priorityItems runs 1 to 5 with the ends named, 0 when a priority is missing', () => {
+    const result = priorityItems({ 1: 4, 3: 9 })
+    expect(result.map((i) => i.value)).toEqual([4, 0, 9, 0, 0])
+    expect(result[0].label).toBe('Priority 1 · most urgent')
+    expect(result[4].label).toBe('Priority 5 · least urgent')
+  })
+
+  it('categoryItems keeps every category in order with its colour, 0 when missing', () => {
+    const result = categoryItems({ plumbing: 6, other: 1 })
+    expect(result).toHaveLength(11)
+    expect(result[0]).toEqual({ key: 'plumbing', label: 'Plumbing', value: 6, color: '#8f6bd9' })
+    expect(result[2].label).toBe('AC / heating')
+    expect(result[2].value).toBe(0)
+    expect(result[10]).toMatchObject({ key: 'other', value: 1 })
+  })
+
+  it('engineerItems makes one slice per engineer, sized by tickets assigned, colours repeating past eight', () => {
+    const engineers = Array.from({ length: 9 }, (_, i) => ({ id: i + 1, name: `E${i + 1}`, assigned: 9 - i, resolved: 0, averageSeconds: null }))
+    const result = engineerItems(engineers)
+    expect(result[0]).toEqual({ key: 1, label: 'E1', value: 9, color: '#2a78d6' })
+    expect(result[8].color).toBe(result[0].color) // the ninth takes the first hue again
+    expect(engineerItems([])).toEqual([])
   })
 
   it('Tile shows a number and a caption', () => {
@@ -105,5 +129,40 @@ describe('Donut', () => {
     fireEvent.pointerMove(arc, { clientX: 5, clientY: 5 })
     expect(screen.getByRole('status')).toBeInTheDocument()
     fireEvent.pointerLeave(arc)
+  })
+
+  it('keeps the readout by the pointer when a click focuses the arc', () => {
+    render(<Donut items={items} onSelect={() => {}} />)
+    const arc = document.querySelector('.donut svg g')
+    fireEvent.pointerMove(arc, { clientX: 40, clientY: 30 })
+    const before = screen.getByRole('status').style.left
+    fireEvent.focus(arc) // what a mouse click does after the pointer readout is up
+    expect(screen.getByRole('status').style.left).toBe(before)
+    expect(screen.getByRole('status')).toHaveTextContent('7Open')
+  })
+})
+
+describe('Donut keyboard use', () => {
+  it('Enter or Space on a focused arc or a legend name selects it, other keys do not', () => {
+    const onSelect = vi.fn()
+    render(<Donut items={items} onSelect={onSelect} />)
+    const arc = screen.getByRole('button', { name: 'Open: 7' })
+    fireEvent.keyDown(arc, { key: 'Enter' })
+    fireEvent.keyDown(arc, { key: ' ' })
+    fireEvent.keyDown(arc, { key: 'Tab' })
+    expect(onSelect).toHaveBeenCalledTimes(2)
+    expect(onSelect).toHaveBeenLastCalledWith(expect.objectContaining({ key: 'open', value: 7 }))
+    fireEvent.click(screen.getByRole('button', { name: 'Closed' })) // the legend name
+    expect(onSelect).toHaveBeenCalledTimes(3)
+  })
+
+  it('shows the readout at the arc when it is focused from the keyboard', () => {
+    render(<Donut items={items} />)
+    const arc = document.querySelector('.donut svg g')
+    fireEvent.focus(arc) // no pointer readout was showing, so it is placed at the arc
+    expect(screen.getByRole('status')).toHaveTextContent('7Open')
+    expect(screen.getByRole('status').style.left).not.toBe('')
+    fireEvent.blur(arc)
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
   })
 })

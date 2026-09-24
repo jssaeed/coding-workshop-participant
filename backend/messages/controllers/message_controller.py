@@ -34,8 +34,10 @@ def get_incident_for_thread(caller, incident_id, lock=False):
     if incident is None:
         raise HttpError(404, "Incident not found")
 
+    # The reporter, the assignee, and the facility admins at the ticket's
+    # branch (an admin at another branch is an outsider).
     allowed = (
-        auth.is_admin(caller)
+        (auth.is_admin(caller) and incident["branch_id"] == caller["branch_id"])
         or incident["reported_by"] == caller["id"]
         or incident["assigned_to"] == caller["id"]
     )

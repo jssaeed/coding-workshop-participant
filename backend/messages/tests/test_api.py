@@ -13,6 +13,7 @@ def people(db):
         "employee": db.create_user("employee"),
         "outsider": db.create_user("employee"),
         "db_admin": db.create_user("db_admin"),
+        "miami_admin": db.create_user("facility_admin", branch_id=2),  # the ticket is at branch 1
     }
 
 
@@ -32,7 +33,7 @@ class TestPost:
         assert db.fetch_one("SELECT user_id, message FROM messages WHERE id = %s", (data["id"],)) == {"user_id": people["employee"]["id"], "message": "On my way up."}
 
     def test_who_may_post(self, api, db, people, ticket):
-        for who, expected in [("engineer", 201), ("admin", 201), ("outsider", 404), ("db_admin", 404)]:
+        for who, expected in [("engineer", 201), ("admin", 201), ("outsider", 404), ("db_admin", 404), ("miami_admin", 404)]:
             status, _ = api(handler, "POST", "/api/messages", user=people[who], body={"incidentId": ticket, "message": "Hi"})
             assert status == expected, who
         assert db.count("messages") == 2
@@ -87,7 +88,7 @@ class TestRead:
         assert older["total"] == 4
 
     def test_who_may_read(self, api, db, people, ticket):
-        for who, expected in [("employee", 200), ("engineer", 200), ("admin", 200), ("outsider", 404), ("db_admin", 404)]:
+        for who, expected in [("employee", 200), ("engineer", 200), ("admin", 200), ("outsider", 404), ("db_admin", 404), ("miami_admin", 404)]:
             status, _ = api(handler, "GET", "/api/messages", user=people[who], query={"incidentId": str(ticket)})
             assert status == expected, who
 

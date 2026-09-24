@@ -2,7 +2,7 @@
 Stats view: turns count rows into the JSON the Statistics page expects.
 """
 
-from models.incident import STATUSES
+from models.incident import CATEGORIES, MAX_PRIORITY, MIN_PRIORITY, STATUSES
 
 
 def status_counts(rows):
@@ -16,6 +16,34 @@ def status_counts(rows):
     for row in rows:
         counts[row["status"]] = row["count"]
     return {"total": sum(counts.values()), "byStatus": counts}
+
+
+def priority_counts(rows):
+    """
+    {"1": 4, "2": 7, "3": 20, "4": 6, "5": 5}
+
+    Every priority from 1 (most urgent) to 5 is present, with 0 when empty,
+    so the chart always has the same slices in the same order. The keys are
+    strings because that is what JSON objects have.
+    """
+    counts = {str(priority): 0 for priority in range(MIN_PRIORITY, MAX_PRIORITY + 1)}
+    for row in rows:
+        counts[str(row["priority"])] = row["count"]
+    return counts
+
+
+def category_counts(rows):
+    """
+    {"plumbing": 6, "electrical": 3, ..., "other": 1}
+
+    Every category is present, in the order of CATEGORIES, with 0 when
+    empty, so the chart always has the same bars and a category with no
+    tickets still shows as a zero.
+    """
+    counts = {category: 0 for category in CATEGORIES}
+    for row in rows:
+        counts[row["category"]] = row["count"]
+    return counts
 
 
 def building_counts(rows):

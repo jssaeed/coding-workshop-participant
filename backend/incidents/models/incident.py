@@ -21,12 +21,19 @@ APPROVAL_STATUSES = ["blocked", "resolved"]
 MIN_PRIORITY = 1
 MAX_PRIORITY = 5
 
+# What kind of problem a ticket is about. The same list is the CHECK rule on
+# incidents.category in the migrations service; change both together.
+# "hvac" is heating, ventilation and air conditioning.
+CATEGORIES = ["plumbing", "electrical", "hvac", "structural", "doors_and_locks", "elevators",
+              "furniture", "appliances", "safety", "cleaning", "other"]
+DEFAULT_CATEGORY = "other"
+
 # The columns every read returns. Kept in one place so every ticket the API
 # sends out has the same fields.
 SELECT_INCIDENT = """
-    SELECT i.id, i.title, i.description, i.status, i.priority,
+    SELECT i.id, i.title, i.description, i.status, i.priority, i.category,
            i.created_at, i.updated_at, i.resolved_at,
-           i.location_id, l.floor, l.room, b.id AS building_id, b.name AS building_name,
+           i.location_id, i.branch_id, l.floor, l.room, b.id AS building_id, b.name AS building_name,
            b.room_numbers_include_floor,
            (SELECT MAX(rooms) FROM building_floors f WHERE f.building_id = b.id) AS max_rooms,
            i.reported_by, reporter.name AS reporter_name, reporter.email AS reporter_email,
@@ -42,15 +49,15 @@ SELECT_INCIDENT = """
 """
 
 
-def create(title, description, priority, location_id, reported_by):
-    """Insert a ticket and return it with its joined data."""
+def create(title, description, priority, category, location_id, reported_by, branch_id):
+    """Insert a ticket (at the reporter's branch) and return it with its joined data."""
     row = execute(
         """
-        INSERT INTO incidents (title, description, priority, location_id, reported_by)
-        VALUES (%s, %s, %s, %s, %s)
+        INSERT INTO incidents (title, description, priority, category, location_id, reported_by, branch_id)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
         RETURNING id
         """,
-        (title, description, priority, location_id, reported_by),
+        (title, description, priority, category, location_id, reported_by, branch_id),
     )
     return find_by_id(row["id"])
 
@@ -62,8 +69,8 @@ def find_by_id(incident_id):
 
 def find_basic(incident_id, lock=False):
     """
-    Return just the plain columns (id, status, priority, location_id,
-    reported_by, assigned_to), or None.
+    Return just the plain columns (id, status, priority, category,
+    location_id, branch_id, reported_by, assigned_to), or None.
 
     Enough to decide who may see or change the ticket, without the joins.
 
@@ -72,7 +79,7 @@ def find_basic(incident_id, lock=False):
     handled one after the other, and the second sees the first's change.
     """
     sql = """
-        SELECT id, status, priority, location_id, reported_by, assigned_to,
+        SELECT id, status, priority, category, location_id, branch_id, reported_by, assigned_to,
                pending_status, pending_requested_by
         FROM incidents
         WHERE id = %s
@@ -91,6 +98,9 @@ SORTS = {
     "updated": "i.updated_at %(dir)s, i.id %(dir)s",
     "id": "i.id %(dir)s",
     "title": "LOWER(i.title) %(dir)s, i.id %(dir)s",
+    # By place: building, then floor, then room. Tickets with no location
+    # come last whichever way round.
+    "location": "LOWER(b.name) %(dir)s NULLS LAST, l.floor %(dir)s, l.room %(dir)s NULLS FIRST, i.id %(dir)s",
 }
 DEFAULT_SORT = "priority"  # most urgent first, then newest
 
@@ -100,15 +110,25 @@ SEARCH_COLUMNS = ["i.title", "i.description", "reporter.name", "assignee.name", 
 MAX_SEARCH_WORDS = 5
 
 
-def _conditions(reported_by, assigned_to, status, priority, pending, unassigned, since, q):
+def _conditions(reported_by, assigned_to, status, priority, pending, unassigned, since, q,
+                building_id=None, floor=None, branch_id=None, category=None):
     """
     Build the WHERE clause for search() and count() from the filters given.
 
     Returns (sql, params): "" when there are no filters, otherwise
     " WHERE a AND b ..." with one %s per value in params.
+
+    status is a list of statuses (a ticket in any of them matches).
+    building_id and floor keep only tickets at that place (floor on its own
+    means nothing; the controller only passes it with a building).
+    branch_id keeps only the tickets filed at that branch (an admin's view).
     """
     conditions = []
     params = []
+
+    if branch_id is not None:
+        conditions.append("i.branch_id = %s")
+        params.append(branch_id)
 
     if reported_by is not None:
         conditions.append("i.reported_by = %s")
@@ -117,11 +137,15 @@ def _conditions(reported_by, assigned_to, status, priority, pending, unassigned,
         conditions.append("i.assigned_to = %s")
         params.append(assigned_to)
     if status is not None:
-        conditions.append("i.status = %s")
-        params.append(status)
+        # A list of statuses: the ticket may be in any of them.
+        conditions.append("i.status = ANY(%s)")
+        params.append(list(status))
     if priority is not None:
         conditions.append("i.priority = %s")
         params.append(priority)
+    if category is not None:
+        conditions.append("i.category = %s")
+        params.append(category)
     if pending:
         conditions.append("i.pending_status IS NOT NULL")
     if unassigned:
@@ -130,6 +154,12 @@ def _conditions(reported_by, assigned_to, status, priority, pending, unassigned,
     if since is not None:
         conditions.append("i.created_at >= %s")
         params.append(since)
+    if building_id is not None:
+        conditions.append("l.building_id = %s")
+        params.append(building_id)
+    if floor is not None:
+        conditions.append("l.floor = %s")
+        params.append(floor)
     if q:
         # Every word must appear somewhere (in any column), in any order,
         # ignoring case. ILIKE on a LEFT JOINed column is NULL for a
@@ -149,15 +179,16 @@ def _conditions(reported_by, assigned_to, status, priority, pending, unassigned,
 
 
 def search(reported_by=None, assigned_to=None, status=None, priority=None, pending=False,
-           unassigned=False, since=None, q=None, sort=DEFAULT_SORT, descending=False,
-           limit=None, offset=0):
+           unassigned=False, since=None, q=None, building_id=None, floor=None, branch_id=None,
+           category=None, sort=DEFAULT_SORT, descending=False, limit=None, offset=0):
     """
     Return one page of the tickets matching every filter that is given.
 
     sort names an entry of SORTS; descending flips it. limit/offset pick the
     page (limit=None means every row, for callers that need them all).
     """
-    where, params = _conditions(reported_by, assigned_to, status, priority, pending, unassigned, since, q)
+    where, params = _conditions(reported_by, assigned_to, status, priority, pending, unassigned, since, q,
+                                building_id, floor, branch_id, category)
     order = SORTS[sort] % {"dir": "DESC" if descending else "ASC"}
     sql = SELECT_INCIDENT + where + " ORDER BY " + order
     if limit is not None:
@@ -167,11 +198,14 @@ def search(reported_by=None, assigned_to=None, status=None, priority=None, pendi
 
 
 def count(reported_by=None, assigned_to=None, status=None, priority=None, pending=False,
-          unassigned=False, since=None, q=None):
+          unassigned=False, since=None, q=None, building_id=None, floor=None, branch_id=None,
+          category=None):
     """How many tickets match the same filters search() takes."""
-    where, params = _conditions(reported_by, assigned_to, status, priority, pending, unassigned, since, q)
-    # The joins are only needed when the text search looks at joined columns.
-    if q:
+    where, params = _conditions(reported_by, assigned_to, status, priority, pending, unassigned, since, q,
+                                building_id, floor, branch_id, category)
+    # The joins are only needed when a filter looks at a joined column: the
+    # text search, or the place.
+    if q or building_id is not None or floor is not None:
         sql = "SELECT COUNT(*) AS n FROM (" + SELECT_INCIDENT + where + ") AS matching"
     else:
         sql = "SELECT COUNT(*) AS n FROM incidents i" + where
@@ -237,6 +271,21 @@ def update_priority(incident_id, priority, author_id, note):
         (
             "UPDATE incidents SET priority = %s, updated_at = NOW() WHERE id = %s",
             (priority, incident_id),
+        ),
+        (
+            "INSERT INTO messages (incident_id, user_id, message) VALUES (%s, %s, %s)",
+            (incident_id, author_id, note),
+        ),
+    ])
+    return find_by_id(incident_id)
+
+
+def update_category(incident_id, category, author_id, note):
+    """Change the category and add a message saying so, in one transaction."""
+    execute_many([
+        (
+            "UPDATE incidents SET category = %s, updated_at = NOW() WHERE id = %s",
+            (category, incident_id),
         ),
         (
             "INSERT INTO messages (incident_id, user_id, message) VALUES (%s, %s, %s)",

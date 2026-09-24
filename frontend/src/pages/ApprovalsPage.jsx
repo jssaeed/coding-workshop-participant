@@ -12,7 +12,9 @@ const PAGE_SIZE = 10
 // Facility admin only: every ticket where an engineer has asked for
 // "blocked" or "resolved", with the reason and the whole thread, so the
 // admin can approve or reject without opening each ticket.
-export default function ApprovalsPage({ onOpen }) {
+// onDecided is called after every approve or reject, so the app can update
+// the count in the header straight away.
+export default function ApprovalsPage({ onOpen, onDecided }) {
   const [items, setItems] = useState([]) // [{ticket, thread, threadTotal}]
   const [total, setTotal] = useState(0) // requests waiting in all
   const [page, setPage] = useState(1)
@@ -63,6 +65,7 @@ export default function ApprovalsPage({ onOpen }) {
     try {
       await incidents.decideApproval(ticket.id, decision, notes[ticket.id] || undefined)
       setSuccess(`#${ticket.id}: ${decision === 'approve' ? 'approved' : 'rejected'}.`)
+      if (onDecided) onDecided()
       // Deciding the last request on a page moves us to the one before it
       if (items.length === 1 && page > 1) setPage(page - 1)
       setRefreshCount(refreshCount + 1)

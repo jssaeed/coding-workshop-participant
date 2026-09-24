@@ -2,9 +2,10 @@
 
 import { describe, expect, it } from 'vitest'
 import {
-  APPROVAL_STATUSES, BRANCH_ROLES, PRIORITIES, ROLES, ROLE_ORDER, STATUSES, STATUS_CHART_COLORS, STATUS_COLORS,
-  canManageUsers, floorLabel, floorOptions, formatDate, formatLocation, initial, isAdmin, isDbAdmin, isStaff,
-  label, personName, range, roomLabel, roomsOnFloor,
+  APPROVAL_STATUSES, BRANCH_ROLES, CATEGORIES, CATEGORY_CHART_COLORS, DEFAULT_CATEGORY, ENGINEER_CHART_COLORS,
+  PRIORITIES, PRIORITY_CHART_COLORS, ROLES, ROLE_ORDER, STATUSES, STATUS_CHART_COLORS, STATUS_COLORS,
+  canManageUsers, categoryLabel, defaultTicketScopeFor, floorLabel, floorOptions, formatDate, formatDuration, formatLocation,
+  initial, isAdmin, isDbAdmin, isStaff, label, landingPageFor, matchesSearch, personName, range, roomLabel, roomsOnFloor, ticketListUrl,
 } from '../../src/services/format'
 
 const building = {
@@ -128,5 +129,80 @@ describe('constants', () => {
       expect(STATUS_CHART_COLORS[status]).toMatch(/^#[0-9a-f]{6}$/)
     }
     for (const priority of PRIORITIES) expect(Object.keys(ROLE_ORDER).length).toBe(4) || priority
+  })
+})
+
+describe('categories', () => {
+  it('match the backend list and default', () => {
+    expect(CATEGORIES).toEqual([
+      'plumbing', 'electrical', 'hvac', 'structural', 'doors_and_locks', 'elevators',
+      'furniture', 'appliances', 'safety', 'cleaning', 'other',
+    ])
+    expect(DEFAULT_CATEGORY).toBe('other')
+  })
+
+  it('write the names people read', () => {
+    expect(categoryLabel('plumbing')).toBe('Plumbing')
+    expect(categoryLabel('hvac')).toBe('AC / heating')
+    expect(categoryLabel('doors_and_locks')).toBe('Doors & locks')
+    expect(categoryLabel(undefined)).toBe('')
+  })
+
+  it('give every category and priority a chart colour, and the engineers a fixed sequence', () => {
+    for (const category of CATEGORIES) expect(CATEGORY_CHART_COLORS[category]).toMatch(/^#[0-9a-f]{6}$/)
+    for (const priority of PRIORITIES) expect(PRIORITY_CHART_COLORS[priority]).toMatch(/^#[0-9a-f]{6}$/)
+    expect(new Set(Object.values(CATEGORY_CHART_COLORS)).size).toBe(CATEGORIES.length) // no two alike
+    expect(ENGINEER_CHART_COLORS).toHaveLength(8)
+    expect(new Set(ENGINEER_CHART_COLORS).size).toBe(8)
+  })
+})
+
+describe('formatDuration', () => {
+  it('writes minutes, hours and days', () => {
+    expect(formatDuration(90)).toBe('2m')
+    expect(formatDuration(35 * 60)).toBe('35m')
+    expect(formatDuration(3600)).toBe('1h 0m')
+    expect(formatDuration(2 * 3600 + 15 * 60)).toBe('2h 15m')
+    expect(formatDuration(93600)).toBe('1d 2h')
+  })
+
+  it('is a dash when nothing was resolved', () => {
+    expect(formatDuration(null)).toBe('—')
+    expect(formatDuration(undefined)).toBe('—')
+  })
+})
+
+describe('matchesSearch', () => {
+  it('needs every word, in any order, ignoring case', () => {
+    expect(matchesSearch('Leaking pipe in HQ', 'hq leak')).toBe(true)
+    expect(matchesSearch('Leaking pipe in HQ', 'hq annex')).toBe(false)
+    expect(matchesSearch(null, '')).toBe(true)
+  })
+})
+
+describe('where each role goes', () => {
+  const user = (role) => ({ role })
+
+  it('lands on the page the role uses most', () => {
+    expect(landingPageFor(user('employee'))).toBe('/tickets')
+    expect(landingPageFor(user('engineer'))).toBe('/tickets')
+    expect(landingPageFor(user('facility_admin'))).toBe('/stats')
+    expect(landingPageFor(user('db_admin'))).toBe('/')
+  })
+
+  it('opens the Tickets page on the scope the role works from', () => {
+    expect(defaultTicketScopeFor(user('employee'))).toBe('mine')
+    expect(defaultTicketScopeFor(user('engineer'))).toBe('assigned')
+    expect(defaultTicketScopeFor(user('facility_admin'))).toBe('all')
+    expect(defaultTicketScopeFor(user('db_admin'))).toBe('mine')
+  })
+})
+
+describe('ticketListUrl', () => {
+  it('builds the Tickets page address, leaving empty values out', () => {
+    expect(ticketListUrl({ scope: 'all', days: 14, status: 'open' })).toBe('/tickets?scope=all&days=14&status=open')
+    expect(ticketListUrl({ scope: 'all', category: 'plumbing', q: 'Bob Stone' })).toBe('/tickets?scope=all&category=plumbing&q=Bob+Stone')
+    expect(ticketListUrl({ status: '', priority: undefined, buildingId: null })).toBe('/tickets')
+    expect(ticketListUrl({})).toBe('/tickets')
   })
 })

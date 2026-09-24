@@ -60,7 +60,7 @@ class TestMarkReadRules:
     @pytest.fixture
     def models(self, monkeypatch, no_database):
         return {
-            "incident": stub(monkeypatch, inbox_model, "find_basic_incident", {"id": 12, "reported_by": 4, "assigned_to": 7}),
+            "incident": stub(monkeypatch, inbox_model, "find_basic_incident", {"id": 12, "branch_id": 1, "reported_by": 4, "assigned_to": 7}),
             "mark": stub(monkeypatch, inbox_model, "mark_read", {"incident_id": 12, "last_read_at": NOW}),
             "count": stub(monkeypatch, inbox_model, "unread_count", 1),
         }
@@ -76,6 +76,11 @@ class TestMarkReadRules:
         if expected == 200:
             assert data == {"incidentId": 12, "lastReadAt": NOW.isoformat(), "unread": 1}
             assert models["mark"].calls[0][0] == (user_id, 12)
+
+    def test_admin_at_another_branch_is_an_outsider(self, models, monkeypatch):
+        sign_in_as(monkeypatch, "facility_admin", user_id=1, branch_id=2)  # the ticket is at branch 1
+        assert call(handler, "PUT", "/api/inbox/12/read")[0] == 404
+        assert models["mark"].calls == []
 
     def test_mark_read_is_one_transaction(self, models, monkeypatch, no_database):
         sign_in_as(monkeypatch, "employee", user_id=4)

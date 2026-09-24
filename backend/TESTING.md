@@ -69,23 +69,33 @@ Last run on 2026-09-24 (`./bin/test-backend.sh`, see `test-results/backend/summa
 
 | Suite | Tests | Coverage of the suite's own code (earlier `--cov` run) |
 | --- | ---: | ---: |
-| `_shared` (the library) | 210 | 98% |
+| `_shared` (the library) | 216 | 98% |
 | `users` | 107 | 100% |
 | `buildings` | 72 | 99% |
-| `incidents` | 193 | 99% |
-| `messages` | 43 | 100% |
-| `inbox` | 39 | 100% |
-| `migrations` | 23 | 85% |
-| **Total** | **687** | |
+| `incidents` | 250 | 99% |
+| `messages` | 44 | 100% |
+| `inbox` | 40 | 100% |
+| `migrations` | 33 | 99% |
+| **Total** | **762** | |
 
-One test fails at the moment: `incidents/tests/test_api.py::TestStats::test_overview_counts_the_last_n_days`, which predates the paging work and expects the overview without the `resolution` block that the engineer-statistics change added. Everything else passes.
+Every test passes. `incidents/tests/test_api.py::TestStats::test_overview_counts_the_last_n_days` used to fail because it expected the overview without the `resolution` block; it now checks `total`, `byStatus`, `byPriority` and `resolution` separately, so adding a block to the overview no longer breaks it.
+
+**Branch scoping** (2026-09-24): tickets carry `branch_id`, and a facility admin only reaches their own branch. `incidents/tests/test_api.py::TestBranches` and `test_controller_unit.py::TestBranchRules` cover it: a Miami admin gets `404` on a Princeton ticket for every read and change, the admin list scopes and statistics only count their branch, and an assignee must work at the ticket's branch. The messages and inbox suites check the same admin gets `404` on the thread and on mark-read. `_testing/db.py`'s `create_incident` sets `branch_id` from the reporter (or `branch_id=`), so older tests did not change.
+
+**Ticket categories** (2026-09-24): tickets carry a `category` (`plumbing`, `electrical`, `hvac`, ... , `other`; the list is in `incidents/models/incident.py` and as the CHECK rule on the column) and `GET /api/incidents/stats/overview` counts the branch's tickets per category. `incidents/tests/test_api.py` checks the default (`other`), that an unknown category saves nothing, the `?category=` list filter, `TestCategory` (assignee or admin changes it with a thread message; others get `403`, and nothing changes), and `byCategory` in `TestStats`. `test_controller_unit.py::TestCategoryRules` covers the validation messages and roles without a database, and `TestStatsView` checks every category is listed with a zero. `migrations/tests/test_api.py` checks the `incidents_category_idx` index and that the sample data spreads tickets over the categories. `_testing/db.py`'s `create_incident` takes `category=` (default `other`), so older tests did not change.
+
+**Several statuses at once** (2026-09-24): `GET /api/incidents?status=open,in_progress` keeps tickets in any of the listed statuses (the model uses `i.status = ANY(%s)` with the list). `incidents/tests/test_controller_unit.py::TestListValidation` checks the list reaches the model and that one bad name in the list is a `400`; `test_api.py::TestList::test_filters` checks the rows.
+
+**Upgrade paths** (2026-09-24): `migrations/tests/test_api.py::TestUpgrades` puts one table at a time back into the shape an earlier version made (no `category` column, a free-text `locations` table, `ON DELETE RESTRICT` user links, no `assigned` status, no `branch_id` columns, floors `>= 1`, no `db_admin` role), runs the migration, and checks the new shape and the data it filled in (old tickets become `other`, an open ticket with an engineer becomes `assigned`, a ticket takes its building's branch, else its reporter's). Writing them found a bug: `SCHEMA` created the `users_branch_created_idx` index before `add_branches_to_users()` had added the column, so a pre-branch database could not be migrated at all. The index is now created by `add_users_directory_index()` after that helper, the same way the incidents index already was. Two more unit tests cover the seed loader's own rollback and the `500` the handler gives when a seed load fails. The incidents suite gained the `?days=` filter, the model with no filters (the callers that need every row), and the optional note on a request, an approval and a rejection.
+
+**Id counters after a seed load** (2026-09-24): `seed.sql` inserts rows with fixed ids, which does not move PostgreSQL's id counters, so the first comment or ticket after a seed load on the cloud failed with `duplicate key`. `move_id_counters_past_existing_rows()` in the migrations service now runs after every seed load and on every migration; `migrations/tests/test_api.py::TestSeed` checks that a new user, ticket and message each get the next free id, and that a plain migration repairs a table holding a hand-set id.
 
 The suites cover the two rules every write and every list now follows:
 
 - **Every request that writes runs in one transaction.** The controller opens `with transaction():` around the permission check, the row lock and the writes, so a request that fails half-way saves nothing (the unit tests count commits and rollbacks on the fake connection; the integration tests check the rows). Races that slip past a check are caught by the database's own rules and turned into the same `409` (a duplicate email at signup, a duplicate building name).
 - **Every list is one page from the database.** `GET /api/incidents` and `GET /api/users` take `page`/`limit`/`q`/`sort`/`order` and answer `{items, total, page, limit, pages}`; `GET /api/messages` walks a thread newest-first with a `before` cursor. Tests check that pages do not overlap, that a message posted mid-read does not shift the pages, and that the migration creates the indexes the page queries use.
 
-Coverage is line and branch coverage of `function.py`, `controllers/`, `models/` and `views/` for a service, and of every file for `_shared`. The uncovered lines in `migrations/function.py` are the upgrade paths for databases created by earlier versions of the schema (see below). Against the guide's goals: backend components and API endpoints are above the 80% and 90% marks, and every documented validation and error case has a test.
+Coverage is line and branch coverage of `function.py`, `controllers/`, `models/` and `views/` for a service, and of every file for `_shared`. The upgrade paths in `migrations/function.py` for databases created by earlier versions of the schema are covered by `TestUpgrades` (above). Against the guide's goals: backend components and API endpoints are above the 80% and 90% marks, and every documented validation and error case has a test.
 
 The whole run takes about 15 seconds; the unit-only run about 7.
 
@@ -166,12 +176,14 @@ Results on 2026-09-24 (`npm run test:coverage`, see `test-results/frontend/`):
 
 | | |
 | --- | --- |
-| Tests | 168 passed, 1 expected failure (a known bug, below), 15 files, about 80 s |
-| Coverage of `src/` | 97% statements, 93% branches, 97% lines (`main.jsx` excluded) |
+| Tests | 237 passed, 17 files, about 80 s |
+| Coverage of `src/` | 98% statements, 96% branches, 99% lines (`main.jsx` excluded) |
 
 Every page and component is above 90% except `App.jsx` (83%: the 30-second poll timer and the role-guard fallbacks for pages a role cannot open) and `HomePage.jsx` (82%).
 
-**Finding: an employee whose message fails to post sees no error.** In `TicketPage.jsx` the error box for actions (`actionError`) is rendered inside the "Actions" card, which only staff get. An employee posting on a closed ticket, or hitting any other error, gets nothing. The test `shows the backend error when posting fails (employee)` is marked `it.fails` and will start failing (that is, passing) once the Alert moves out of that card.
+**Fixed: an employee whose message failed to post saw no error.** In `TicketPage.jsx` the error box for actions (`actionError`) was rendered inside the "Actions" card, which only staff get, so an employee posting on a closed ticket got nothing. The Alert now sits between the Actions card and the thread, for everyone; the test `shows the backend error when posting fails (employee)` was marked `it.fails` and now passes as a plain test, and a second one covers a failed "Show earlier messages".
+
+**Added on 2026-09-24** (after the categories, engineers ring, multi-status filter and approvals-count changes): direct tests for every helper in `format.js` (category names and colours, `formatDuration`, `matchesSearch`, `landingPageFor`, `defaultTicketScopeFor`, `ticketListUrl`), for the chart item builders (`priorityItems`, `categoryItems`, `engineerItems`) and for keyboard use of the Donut (Enter and Space select, focus places the readout at the arc); a `HomePage` test file; the ticket route in `App.test.jsx` (open a ticket from its address, go back); and the page actions that had none: rejecting a request, moving a ticket to a floor and room, clearing a column sort, clearing the status filter, cancelling the new-ticket dialog, and the personal statistics' range and error.
 
 See [frontend/tests/README.md](../frontend/tests/README.md) for the layout and how to add a test.
 

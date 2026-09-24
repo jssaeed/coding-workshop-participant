@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Layout } from 'antd'
 import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { clearSession, getStoredUser, getToken, inbox, incidents, saveSession, users } from './services/api'
-import { canManageUsers, isAdmin } from './services/format'
+import { canManageUsers, isAdmin, landingPageFor } from './services/format'
 import AppHeader from './components/AppHeader'
 import AppFooter from './components/AppFooter'
 import LoginPage from './pages/LoginPage'
@@ -31,7 +31,7 @@ const POLL_EVERY_MS = 30000
 //   /users       admins          /buildings    admin
 
 // The ticket page reads its id from the URL
-function TicketRoute({ user, setUnread }) {
+function TicketRoute({ user, setUnread, onDecided }) {
   const { id } = useParams()
   const navigate = useNavigate()
   return (
@@ -41,6 +41,7 @@ function TicketRoute({ user, setUnread }) {
       user={user}
       onBack={() => navigate(-1)}
       setUnread={setUnread}
+      onDecided={onDecided}
     />
   )
 }
@@ -60,7 +61,7 @@ function App() {
   function handleLogin(loggedInUser, token, refreshToken) {
     saveSession(loggedInUser, token, refreshToken)
     setUser(loggedInUser)
-    navigate('/')
+    navigate(landingPageFor(loggedInUser)) // each role starts on the page it uses most
   }
 
   function handleLogout() {
@@ -84,6 +85,15 @@ function App() {
 
   const openTicket = (id) => navigate(`/tickets/${id}`)
 
+  // How many requests are waiting for this admin. Polled below, and also
+  // called by the Approvals and ticket pages right after a decision, so the
+  // number in the header drops at once instead of on the next poll.
+  const refreshPendingCount = useCallback(() => {
+    if (!user || !isAdmin(user)) return
+    // Only the total is needed, so ask for the smallest possible page
+    incidents.list({ scope: 'pending', limit: 1 }).then((data) => setPendingCount(data.total)).catch(() => {})
+  }, [user])
+
   // While signed in, every 30 seconds: refresh the counts, and check
   // whether the user's role has changed (an admin may have promoted them).
   useEffect(() => {
@@ -91,10 +101,7 @@ function App() {
 
     function poll() {
       inbox.count().then((data) => setUnread(data.unread)).catch(() => {})
-      if (isAdmin(user)) {
-        // Only the total is needed, so ask for the smallest possible page
-        incidents.list({ scope: 'pending', limit: 1 }).then((data) => setPendingCount(data.total)).catch(() => {})
-      }
+      refreshPendingCount()
 
       users.me().then((current) => {
         if (current.role !== user.role || current.name !== user.name) {
@@ -107,7 +114,7 @@ function App() {
     poll()
     const timer = setInterval(poll, POLL_EVERY_MS)
     return () => clearInterval(timer) // stop polling on sign out
-  }, [user])
+  }, [user, refreshPendingCount])
 
   // Pages only some roles may open send everyone else home
   const adminOnly = (page) => (isAdmin(user) ? page : <Navigate to="/" replace />)
@@ -129,10 +136,12 @@ function App() {
           ) : (
             <Routes>
               <Route path="/" element={<HomePage user={user} onNavigate={goTo} />} />
-              <Route path="/tickets" element={<TicketsPage user={user} onOpen={openTicket} />} />
-              <Route path="/tickets/:id" element={<TicketRoute user={user} setUnread={setUnread} />} />
+              {/* The Statistics page links here with filters in the URL (?status=open);
+                  keying on the query string starts the list afresh for each set */}
+              <Route path="/tickets" element={<TicketsPage key={location.search} user={user} onOpen={openTicket} />} />
+              <Route path="/tickets/:id" element={<TicketRoute user={user} setUnread={setUnread} onDecided={refreshPendingCount} />} />
               <Route path="/inbox" element={<InboxPage onOpen={openTicket} setUnread={setUnread} />} />
-              <Route path="/approvals" element={adminOnly(<ApprovalsPage onOpen={openTicket} />)} />
+              <Route path="/approvals" element={adminOnly(<ApprovalsPage onOpen={openTicket} onDecided={refreshPendingCount} />)} />
               <Route path="/stats" element={adminOnly(<StatsPage />)} />
               <Route path="/buildings" element={adminOnly(<BuildingsPage user={user} />)} />
               <Route
